@@ -18,7 +18,7 @@
 #
 # --token/GH_TOKEN is now OPTIONAL (2026-08-26) — without one, host-assets
 # (CyEDR agent/tray binaries, YARA/Sysmon, RELEASE_NOTES.md, self-update) are
-# fetched from the public cyassure/get-cy360 mirror instead of this repo's
+# fetched from the public cyassure/cy360-install mirror instead of this repo's
 # private Releases API; Community and Enterprise ship identical binaries, so
 # there was never a real gate here. Pass --token <PAT> only if you need a
 # private/pre-release build instead of the latest public one:
@@ -38,7 +38,7 @@
 #   --skip-ssh-harden   leave SSH on its current port (no move to 2026)
 #   --dir <path>        install the Docker app into this directory (default: ./cy360)
 #   --token <PAT>       optional — GitHub PAT to pull a private/pre-release build from
-#                        cyassure/cy360's Releases API instead of the public get-cy360
+#                        cyassure/cy360's Releases API instead of the public cy360-install
 #                        mirror (or set GH_TOKEN env var)
 #   --version vX.Y.Z    install a specific release instead of the latest
 #
@@ -580,10 +580,10 @@ if [[ "$MODE" == "full" ]]; then
         # (anonymous `docker pull` works), and the deploy bundle below
         # (docker-compose.yml/.env.example — no product source, ever, see
         # scripts/docker-release.sh's header) is mirrored publicly to
-        # cyassure/get-cy360 alongside this script itself. GH_TOKEN is only
+        # cyassure/cy360-install alongside this script itself. GH_TOKEN is only
         # for the later "DOWNLOAD RELEASE BUNDLE" step's CyEDR agent/host-
         # assets bundle, which stays private — unrelated to this step.
-        _APP_MIRROR="https://raw.githubusercontent.com/cyassure/get-cy360/main"
+        _APP_MIRROR="https://raw.githubusercontent.com/cyassure/cy360-install/main"
 
         if [[ -n "$APP_VERSION" ]]; then
             _APP_TAG="$APP_VERSION"
@@ -805,11 +805,11 @@ else
     # requiring a personal GitHub PAT on every fresh install AND every
     # --update bought no real commercial boundary — only friction. deploy.yml
     # (build-and-publish / build-edr-macos / build-edr-windows) now mirrors
-    # this same content to the public cyassure/get-cy360 repo on every
+    # this same content to the public cyassure/cy360-install repo on every
     # release, the same public repo the "DOCKER APPLICATION" step above
     # already pulls docker-compose.yml/.env.example from.
     if [[ -z "${GH_TOKEN:-}" ]]; then
-        _HA_MIRROR="https://raw.githubusercontent.com/cyassure/get-cy360/main"
+        _HA_MIRROR="https://raw.githubusercontent.com/cyassure/cy360-install/main"
         info "No GH_TOKEN — fetching host-assets from the public mirror instead..."
         _HA_TAG="${APP_VERSION:-}"
         if [[ -z "$_HA_TAG" ]]; then

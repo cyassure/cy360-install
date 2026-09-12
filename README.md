@@ -1,4 +1,4 @@
-# get-cy360
+# cy360-install
 
 The public installer mirror for [Cy360](https://cyassure.eu) — a unified, self-hostable Security Operations platform.
 
@@ -12,7 +12,7 @@ No product source code, build context, or proprietary material lives in this rep
 ## Install Cy360 (Community edition)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cyassure/get-cy360/main/install.sh | bash -s -- --version latest
+curl -fsSL https://raw.githubusercontent.com/cyassure/cy360-install/main/install.sh | bash -s -- --version latest
 ```
 
 Pin a specific version instead of `latest` using any tag from `manifest.json`.
