@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.122 -- 2026-09-09 21:20 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.123 -- 2026-09-13 17:02 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.122"
+_SCRIPT_VERSION="v0.0.123"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1945,8 +1945,19 @@ server {
     # session-protected admin surface under that same prefix (agent list,
     # deployment tokens, agent enroll via admin session, policies, installer
     # token/commands) stays behind oauth2-proxy.
+    # Also covers agents/<id>/self-test/detections — the internal
+    # detection-efficacy CLI tool (devtools/edr-detection-test, a separate
+    # repo, never shipped) authenticates as the agent itself the same way
+    # real agents do, so it hits this exact same "no browser session"
+    # problem. The route itself still 404s everywhere unless a lab has
+    # explicitly set EDR_SELFTEST_ENABLED=true (blueprints/edr/routes.py) —
+    # bypassing IAP for it doesn't expose anything new, it just lets a
+    # lab that HAS opted in actually reach Flask instead of oauth2-proxy
+    # silently swallowing the request. Found live 2026-09-10 exactly the
+    # same way the rest of this block was found: the endpoint returned an
+    # HTML/redirect response instead of JSON with no obvious error.
     # CYEDR-AGENT-BYPASS
-    location ~ ^/api/edr/(agents/self-enroll|agents/[^/]+/heartbeat|telemetry|logs|inventory|fim/events|fim/baseline|sca/results|tamper-events|response/[^/]+/pending|response/[^/]+/commands/[^/]+/complete|installer/agent-binary|installer/custom-yara)$ {
+    location ~ ^/api/edr/(agents/self-enroll|agents/[^/]+/heartbeat|agents/[^/]+/self-test/detections|telemetry|logs|inventory|fim/events|fim/baseline|sca/results|tamper-events|response/[^/]+/pending|response/[^/]+/commands/[^/]+/complete|installer/agent-binary|installer/custom-yara)$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
