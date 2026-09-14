@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.124 -- 2026-09-13 20:24 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.125 -- 2026-09-14 11:17 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.124"
+_SCRIPT_VERSION="v0.0.125"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -2748,6 +2748,31 @@ ufw default allow outgoing >/dev/null 2>&1 || true
 ufw allow 22/tcp   comment "SSH (temp — moved to 2026 by Step 26)" >/dev/null 2>&1 || true
 ufw allow 80/tcp   comment "HTTP (nginx)"   >/dev/null 2>&1 || true
 ufw allow 443/tcp  comment "HTTPS (nginx)"  >/dev/null 2>&1 || true
+
+# AI Security Gateway TLS relays (2026-09-14) — the one deliberate exception
+# to "all public traffic through nginx" above: gateway-mitm-relay/
+# gateway-sni-relay (docker-compose.yml) terminate raw client TLS
+# connections themselves, below the HTTP layer nginx reverse-proxies — an
+# endpoint's network_control proxy_host has to reach these ports directly,
+# not through 80/443. Only opened when the "aigateway" Compose profile is
+# actually active (ON by default — see .env.example's COMPOSE_PROFILES) so
+# a customer who removed it from COMPOSE_PROFILES doesn't get 2 open ports
+# to nothing; re-run this step after changing COMPOSE_PROFILES to pick up
+# either direction.
+_ENV_FILE_FOR_UFW=""
+if [[ -f "./.env" ]]; then
+    _ENV_FILE_FOR_UFW="./.env"
+elif [[ -f "${APP_DIR}/.env" ]]; then
+    _ENV_FILE_FOR_UFW="${APP_DIR}/.env"
+fi
+if [[ -n "$_ENV_FILE_FOR_UFW" ]] && grep -qE '^COMPOSE_PROFILES=.*aigateway' "$_ENV_FILE_FOR_UFW" 2>/dev/null; then
+    ufw allow 8443/tcp comment "AI Security Gateway — Tier 3 SNI relay"        >/dev/null 2>&1 || true
+    ufw allow 8444/tcp comment "AI Security Gateway — Tier 2 MITM relay"       >/dev/null 2>&1 || true
+    info "UFW: 8443/8444 opened (aigateway profile active)"
+else
+    ufw delete allow 8443/tcp >/dev/null 2>&1 || true
+    ufw delete allow 8444/tcp >/dev/null 2>&1 || true
+fi
 
 # Remove any legacy rules that expose internal services directly
 for _p in 5252 8100 5433 6379 5601 4180 4433 1880 11434 6333 1514 1515; do
