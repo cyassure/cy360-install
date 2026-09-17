@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.146 -- 2026-09-17 08:03 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.147 -- 2026-09-17 09:40 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.146"
+_SCRIPT_VERSION="v0.0.147"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -425,8 +425,33 @@ if [[ -z "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
             BASE_DOMAIN="$CYASSURE_SETUP_DOMAIN"
             info "Using domain from CYASSURE_SETUP_DOMAIN: ${BASE_DOMAIN}"
         else
-            read -p "Enter your base domain name [cyassure.eu]: " USER_DOMAIN
-            BASE_DOMAIN="${USER_DOMAIN:-cyassure.eu}"
+            # No default is offered here on purpose. This used to show
+            # "[cyassure.eu]" (CyAssure's own company domain) as a bracketed
+            # default that a blank Enter would silently accept — every
+            # customer who pressed Enter here got a working-looking install
+            # that was actually configured for OUR domain, not theirs. That
+            # value then matched the (now-removed, see the HOST VHOST + TLS
+            # step below) sentinel check for "not configured yet", which
+            # silently skipped host-vhost/TLS provisioning with only an info
+            # line — the compounding bug that caused a real fresh install
+            # to come up with no working HTTPS at all. Loop until a
+            # plausible FQDN is actually typed; never fall back to a
+            # domain the customer didn't choose.
+            BASE_DOMAIN=""
+            while [[ -z "$BASE_DOMAIN" ]]; do
+                read -p "Enter your base domain name (e.g. cy360.yourcompany.com): " USER_DOMAIN
+                # Tolerate a pasted scheme/trailing slash; still require a
+                # real FQDN (at least one dot, valid hostname characters).
+                USER_DOMAIN="${USER_DOMAIN#http://}"; USER_DOMAIN="${USER_DOMAIN#https://}"
+                USER_DOMAIN="${USER_DOMAIN%%/*}"
+                if [[ -z "$USER_DOMAIN" ]]; then
+                    warn "A domain is required — this drives cookies, OAuth/SSO callback URLs, and the TLS certificate. Nothing safe to default to."
+                elif [[ ! "$USER_DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]; then
+                    warn "'${USER_DOMAIN}' doesn't look like a valid domain (e.g. cy360.yourcompany.com) — try again."
+                else
+                    BASE_DOMAIN="$USER_DOMAIN"
+                fi
+            done
         fi
 
         step_header "ENVIRONMENT TYPE"
@@ -1758,7 +1783,17 @@ TLS_MODE="${TLS_MODE:-http01}"
 
 if [[ "$TLS_MODE" == "none" ]]; then
     :  # customer-managed edge — Step 4.3c's own info line covers this case
-elif [[ -z "$BASE_DOMAIN" || "$BASE_DOMAIN" == "cyassure.eu" ]]; then
+elif [[ -z "$BASE_DOMAIN" ]]; then
+    # No hardcoded sentinel domain here on purpose (this used to also skip
+    # when BASE_DOMAIN=="cyassure.eu" — CyAssure's own domain, which had been
+    # the interactive prompt's bracketed default). That made the skip
+    # trigger silently for a real customer install any time the domain
+    # prompt was left blank, on ANY domain choice, and would have kept
+    # misfiring for every future default string too. The domain-config
+    # prompt above now refuses to let BASE_DOMAIN end up empty in the first
+    # place, so an empty value here only happens on a non-interactive
+    # --update/--infra run against a server that never had a domain set —
+    # a genuine "nothing to provision yet" case, not a placeholder guess.
     info "BASE_DOMAIN not configured to a real domain yet — skipping host vhost/TLS provisioning (re-run once it's set)"
 else
     step_header "HOST VHOST + TLS (mode: ${TLS_MODE})"
