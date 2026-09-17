@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.147 -- 2026-09-17 09:40 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.148 -- 2026-09-17 12:05 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.147"
+_SCRIPT_VERSION="v0.0.148"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -439,7 +439,17 @@ if [[ -z "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
             # domain the customer didn't choose.
             BASE_DOMAIN=""
             while [[ -z "$BASE_DOMAIN" ]]; do
-                read -p "Enter your base domain name (e.g. cy360.yourcompany.com): " USER_DOMAIN
+                # `read` returns non-zero on EOF (closed/empty stdin — e.g. this
+                # script was piped via `curl | bash` with no terminal attached
+                # and no CYASSURE_SETUP_DOMAIN set). Without this check the loop
+                # spins forever: EOF makes every subsequent read return instantly
+                # with an empty string, which just re-fails validation and loops
+                # again — a tight, silent, 100%-CPU hang, confirmed in testing.
+                # Fail loudly instead.
+                if ! read -p "Enter your base domain name (e.g. cy360.yourcompany.com): " USER_DOMAIN; then
+                    error "No input available to read a domain from (no terminal attached — e.g. this script was piped via 'curl | bash'). Download it to a file and run it directly, or set CYASSURE_SETUP_DOMAIN=yourdomain.com beforehand for a non-interactive run."
+                    exit 1
+                fi
                 # Tolerate a pasted scheme/trailing slash; still require a
                 # real FQDN (at least one dot, valid hostname characters).
                 USER_DOMAIN="${USER_DOMAIN#http://}"; USER_DOMAIN="${USER_DOMAIN#https://}"
@@ -458,18 +468,44 @@ if [[ -z "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
         # CYASSURE_SETUP_ENV=prod|staging pre-seeds this the same way.
         if [[ -n "${CYASSURE_SETUP_ENV:-}" ]]; then
             _ENV_CHOICE="$CYASSURE_SETUP_ENV"
+            if [[ "$_ENV_CHOICE" != "1" && "$_ENV_CHOICE" != "2" && "$_ENV_CHOICE" != "prod" && "$_ENV_CHOICE" != "staging" ]]; then
+                error "CYASSURE_SETUP_ENV must be 'prod' or 'staging' — got '${_ENV_CHOICE}'. Refusing to silently fall back to staging (see the ENVIRONMENT TYPE comment above for why that's dangerous on a real domain)."
+                exit 1
+            fi
         else
-            echo "  Select environment type:"
-            echo "    [1] PROD     — request a real Let's Encrypt certificate"
-            echo "    [2] STAGING  — use Let's Encrypt staging (no browser-trusted cert)"
-            read -p "  Choice [1/2, default=2]: " _ENV_CHOICE
+            # No silent default here on purpose — this used to show
+            # "[1/2, default=2]" and treat ANY blank/unrecognized answer as
+            # STAGING. A real fresh production install (cy360.cyassure.eu,
+            # Cloudflare-proxied Full/strict mode) got a STAGING cert this
+            # way — Let's Encrypt's staging root isn't in any browser's or
+            # Cloudflare's trust store, so the domain came up with Cloudflare
+            # error 526 "Invalid SSL Certificate" even though the vhost/cert
+            # machinery itself worked correctly end to end. Same class of bug
+            # as the BASE_DOMAIN prompt above (a blank answer silently
+            # producing a broken-looking-fine result) — loop until "1" or
+            # "2" is actually typed.
+            _ENV_CHOICE=""
+            while [[ "$_ENV_CHOICE" != "1" && "$_ENV_CHOICE" != "2" && "$_ENV_CHOICE" != "prod" && "$_ENV_CHOICE" != "staging" ]]; do
+                echo "  Select environment type:"
+                echo "    [1] PROD     — request a real, browser/CDN-trusted Let's Encrypt certificate"
+                echo "    [2] STAGING  — Let's Encrypt staging (untrusted test cert; browsers will warn,"
+                echo "                   and a CDN/proxy in front of this domain — e.g. Cloudflare in"
+                echo "                   Full/strict SSL mode — will reject it outright, error 526)"
+                # Same EOF guard as the BASE_DOMAIN loop above — see its comment.
+                if ! read -p "  Choice [1/2]: " _ENV_CHOICE; then
+                    error "No input available to read a choice from (no terminal attached — e.g. this script was piped via 'curl | bash'). Download it to a file and run it directly, or set CYASSURE_SETUP_ENV=prod|staging beforehand for a non-interactive run."
+                    exit 1
+                fi
+                [[ "$_ENV_CHOICE" != "1" && "$_ENV_CHOICE" != "2" && "$_ENV_CHOICE" != "prod" && "$_ENV_CHOICE" != "staging" ]] && \
+                    warn "Enter 1 (PROD) or 2 (STAGING) — no default, since picking wrong silently breaks HTTPS."
+            done
         fi
         if [[ "$_ENV_CHOICE" == "1" || "$_ENV_CHOICE" == "prod" ]]; then
             CERTBOT_ENV=""
             info "PROD selected — using Let's Encrypt production environment for certbot."
         else
             CERTBOT_ENV="--staging"
-            info "STAGING selected — using Let's Encrypt staging environment for certbot."
+            warn "STAGING selected — the resulting certificate will NOT be trusted by browsers, and will make a Cloudflare-proxied (or any CDN) domain in Full/strict SSL mode fail with error 526. Use PROD for anything reachable by real users."
         fi
 
         step_header "TLS / HOST VHOST"
