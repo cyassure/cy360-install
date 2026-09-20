@@ -1,0 +1,418 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenVAS / Greenbone Vulnerability Management (GVM) — OPTIONAL, opt-in stack.
+#
+# Transcribed from Greenbone's own official Community Containers compose
+# reference, fetched verbatim from https://greenbone.github.io/docs/latest/_static/compose.yaml
+# on 2026-08-04 — diff against that URL before relying on this file long
+# term; Greenbone's own topology/image tags/commands may change over time.
+# Deliberate deviations from that literal upstream file, and why:
+#   - every service is tagged with the "vulnscan" Compose profile, so this
+#     never starts unless explicitly requested
+#   - the top-level `name: greenbone-community-edition` key is dropped —
+#     this file is meant to be merged with CyAssure 360's own docker-compose.yml
+#     (via two -f flags), and a second `name:` would fight with
+#     COMPOSE_PROJECT_NAME/the directory-derived project name CyAssure 360
+#     already relies on elsewhere (see docker-compose.yml's own comments on
+#     COMPOSE_PROJECT_NAME) — omitting it here lets that resolution work as
+#     already designed
+#   - `deploy: restart_policy: ...` (Swarm-only; silently ignored by plain
+#     `docker compose up`, which is this entire product's deployment model —
+#     see CLAUDE.md, "Deployment is Docker-only now") is translated to plain
+#     `restart:` so the intended restart behavior actually takes effect here,
+#     not just under `docker stack deploy`
+#   - gvmd's socket (gvmd_socket_vol upstream) is a host-path bind mount at
+#     /opt/cyassure/gvm-socket instead of a Docker named volume, so it can be
+#     shared with CyAssure 360's own `backend` container (see docker-compose.yml
+#     — backend already bind-mounts this same host path, read-only, and
+#     no-ops gracefully if nothing's listening there)
+#   - all other internal-only named volumes are prefixed cy360_gvm_ to
+#     match this project's naming convention
+#   - the optional `ports:` forwarding block on openvasd (commented out
+#     upstream too) and the nginx web-UI ports are left bound to 127.0.0.1
+#     only, consistent with this repo's general "don't expose things beyond
+#     the host without a deliberate action" posture
+#
+# Why this exists / what it actually does: real, active OpenVAS/GVM network
+# vulnerability scanning — thousands of NVTs including protocol-level active
+# probing, not just template matching (contrast with nuclei, which IS just
+# template matching). This is materially heavier than everything else this
+# platform runs by default, and is well-documented in the security community
+# as capable of destabilizing fragile embedded/IoT devices (cameras, DVRs,
+# routers, industrial gateways) — their minimal TCP/IP stacks often aren't
+# hardened against the kind of protocol edge-cases active NVTs send.
+#
+# Because of that, this is deliberately triple-gated, not just profile-gated:
+#   1. This whole stack must be running (see "HOW TO ENABLE" below)
+#   2. ENABLE_OPENVAS=true must be set (docker-compose.yml's `backend`
+#      service reads this; defaults false)
+#   3. The ASM scan itself must be run at the "Deep" tier — the only
+#      SCAN_PROFILES entry with run_openvas=True (cy_asm/cyassure_scan.py) —
+#      an explicit, informed operator choice, never the default/recurring scan
+# ...and even then, vuln_scanner.py's run_openvas_scan() skips the target
+# outright if its already-collected banner fingerprints match a known
+# embedded/IoT device signature (_looks_like_embedded_device) — a real but
+# heuristic safety net, not a guarantee.
+#
+# RESOURCE NOTE: this is a genuinely heavy addition on top of what CyAssure 360
+# already needs — 20 containers, several of which (vulnerability-tests,
+# notus-data, scap-data, cert-bund-data, dfn-cert-data, data-objects,
+# report-formats) exist purely to pull and keep current several GB of feed
+# data; the *first* `up` can take from tens of minutes to multiple hours
+# depending on your network, and Greenbone's own guidance is 8GB+ RAM for the
+# scanner stack alone, on top of whatever CyAssure 360's base stack needs (see
+# DOCKER_DEPLOYMENT.md's sizing table). Not something to enable casually.
+#
+# HOW TO ENABLE:
+#   1. sudo mkdir -p /opt/cyassure/gvm-socket   (same convention as the other
+#      /opt/cyassure subdirectories this repo already uses)
+#   2. docker compose -f docker-compose.yml -f docker-compose.gvm.yml \
+#        --profile vulnscan --profile selfupdate up -d
+#      (include --profile selfupdate too only if you also use that sidecar —
+#      profiles from both files combine when both -f flags are given)
+#   3. Set ENABLE_OPENVAS=true, GVM_USER, GVM_PASSWORD in .env (backend reads
+#      these directly — see docker-compose.yml's backend service comment)
+#   4. Create a gvmd admin user per Greenbone's own current instructions
+#      (https://greenbone.github.io/docs/latest/22.4/container/index.html) —
+#      the exact bootstrap mechanism has changed across Greenbone releases,
+#      so this file intentionally does not hardcode a specific invocation
+#   5. First run: expect a long wait for feed sync before scans succeed —
+#      check `docker compose -f docker-compose.gvm.yml logs -f vulnerability-tests`
+#
+# NOT independently live-verified in this environment: standing up all 20
+# containers, waiting out a real multi-GB feed sync, and running an actual
+# live GVM scan end-to-end. See docs — socpilot Change Log 2026-08-04, Phase 5
+# entry, for exactly what was and wasn't tested.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  vulnerability-tests:
+    image: registry.community.greenbone.net/community/vulnerability-tests
+    profiles: ["vulnscan"]
+    environment:
+      FEED_RELEASE: "24.10"
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_vt_data:/mnt
+
+  notus-data:
+    image: registry.community.greenbone.net/community/notus-data
+    profiles: ["vulnscan"]
+    environment:
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_notus_data:/mnt
+
+  scap-data:
+    image: registry.community.greenbone.net/community/scap-data
+    profiles: ["vulnscan"]
+    environment:
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_scap_data:/mnt
+
+  cert-bund-data:
+    image: registry.community.greenbone.net/community/cert-bund-data
+    profiles: ["vulnscan"]
+    environment:
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_cert_data:/mnt
+
+  dfn-cert-data:
+    image: registry.community.greenbone.net/community/dfn-cert-data
+    profiles: ["vulnscan"]
+    environment:
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_cert_data:/mnt
+    depends_on:
+      cert-bund-data:
+        condition: service_healthy
+
+  data-objects:
+    image: registry.community.greenbone.net/community/data-objects
+    profiles: ["vulnscan"]
+    environment:
+      FEED_RELEASE: "24.10"
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_data_objects:/mnt
+
+  report-formats:
+    image: registry.community.greenbone.net/community/report-formats
+    profiles: ["vulnscan"]
+    environment:
+      FEED_RELEASE: "24.10"
+      KEEP_ALIVE: 1
+    volumes:
+      - cy360_gvm_data_objects:/mnt
+    depends_on:
+      data-objects:
+        condition: service_healthy
+
+  gpg-data:
+    image: registry.community.greenbone.net/community/gpg-data
+    profiles: ["vulnscan"]
+    volumes:
+      - cy360_gvm_gpg_data:/mnt
+
+  redis-server:
+    image: registry.community.greenbone.net/community/redis-server
+    profiles: ["vulnscan"]
+    restart: unless-stopped  # upstream: deploy.restart_policy.condition=any (Swarm-only) — see header
+    volumes:
+      - cy360_gvm_redis_socket:/run/redis/
+
+  pg-gvm-migrator:
+    image: registry.community.greenbone.net/community/pg-gvm-migrator:stable
+    profiles: ["vulnscan"]
+    restart: "no"  # upstream: deploy.restart_policy.condition=none
+    volumes:
+      - cy360_gvm_psql_data:/var/lib/postgresql
+      - cy360_gvm_psql_socket:/var/run/postgresql
+
+  pg-gvm:
+    image: registry.community.greenbone.net/community/pg-gvm:stable
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    volumes:
+      - cy360_gvm_psql_data:/var/lib/postgresql
+      - cy360_gvm_psql_socket:/var/run/postgresql
+    depends_on:
+      pg-gvm-migrator:
+        condition: service_completed_successfully
+
+  gvmd:
+    image: registry.community.greenbone.net/community/gvmd:stable
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    volumes:
+      - cy360_gvm_gvmd_data:/var/lib/gvm
+      - cy360_gvm_scap_data:/var/lib/gvm/scap-data/
+      - cy360_gvm_cert_data:/var/lib/gvm/cert-data
+      - cy360_gvm_data_objects:/var/lib/gvm/data-objects/gvmd
+      - cy360_gvm_vt_data:/var/lib/openvas/plugins
+      - cy360_gvm_psql_data:/var/lib/postgresql
+      # Shared with CyAssure 360's own `backend` container — see this file's
+      # header comment and docker-compose.yml's backend service. Upstream:
+      # a Docker named volume (gvmd_socket_vol); a host-path bind mount here
+      # instead, specifically so a container in a DIFFERENT compose file
+      # (backend, in docker-compose.yml) can reach the same socket.
+      - /opt/cyassure/gvm-socket:/run/gvmd
+      - cy360_gvm_ospd_socket:/run/ospd
+      - cy360_gvm_psql_socket:/var/run/postgresql
+    depends_on:
+      pg-gvm:
+        condition: service_started
+      scap-data:
+        condition: service_healthy
+      cert-bund-data:
+        condition: service_healthy
+      dfn-cert-data:
+        condition: service_healthy
+      data-objects:
+        condition: service_healthy
+      report-formats:
+        condition: service_healthy
+
+  gsa:
+    image: registry.community.greenbone.net/community/gsa:stable-slim
+    profiles: ["vulnscan"]
+    environment:
+      MOUNT_PATH: "/mnt/web"
+      KEEP_ALIVE: 1
+    healthcheck:
+      test: ["CMD-SHELL", "test -e /run/gsa/copying.done"]
+      start_period: 5s
+    volumes:
+      - cy360_gvm_gsa_data:/mnt/web
+
+  gsad:
+    image: registry.community.greenbone.net/community/gsad:stable
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    environment:
+      GSAD_HTTP_ONLY: "true"
+      GSAD_API_ONLY: "true"
+      GSAD_FOREGROUND: "true"
+    volumes:
+      - /opt/cyassure/gvm-socket:/run/gvmd
+    depends_on:
+      gvmd:
+        condition: service_started
+
+  gvm-config:
+    image: registry.community.greenbone.net/community/gvm-config:latest
+    profiles: ["vulnscan"]
+    environment:
+      ENABLE_NGINX_CONFIG: true
+      ENABLE_TLS_GENERATION: true
+    volumes:
+      - cy360_gvm_nginx_config:/mnt/nginx/configs
+      - cy360_gvm_nginx_certs:/mnt/nginx/certs
+
+  # Optional web UI (gsad/gsa via nginx) — CyAssure 360's own Deep-tier ASM scans
+  # talk to gvmd directly over its socket via python-gvm, so this isn't
+  # required for scanning to work; kept only for operators who want the
+  # native Greenbone dashboard for manual investigation. Bound to
+  # 127.0.0.1 only, matching upstream.
+  nginx:
+    image: registry.community.greenbone.net/community/nginx:latest
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8443:443"
+      - "127.0.0.1:9392:9392"
+    volumes:
+      - cy360_gvm_nginx_config:/etc/nginx/conf.d:ro
+      - cy360_gvm_nginx_certs:/etc/nginx/certs:ro
+      - cy360_gvm_gsa_data:/usr/share/nginx/html:ro
+    depends_on:
+      gvm-config:
+        condition: service_completed_successfully
+      gsa:
+        condition: service_healthy
+      gsad:
+        condition: service_started
+
+  # Sets log level of openvas to the set LOG_LEVEL within the env
+  # and changes log output to /var/log/openvas instead /var/log/gvm
+  # to reduce likelihood of unwanted log interferences
+  configure-openvas:
+    image: registry.community.greenbone.net/community/openvas-scanner:stable
+    profiles: ["vulnscan"]
+    volumes:
+      - cy360_gvm_openvas_data:/mnt
+      - cy360_gvm_openvas_log:/var/log/openvas
+    command:
+      - /bin/sh
+      - -c
+      - |
+        printf "table_driven_lsc = yes\nopenvasd_server = http://openvasd:80\n" > /mnt/openvas.conf
+        sed "s/127/128/" /etc/openvas/openvas_log.conf | sed 's/gvm/openvas/' > /mnt/openvas_log.conf
+        chmod 644 /mnt/openvas.conf
+        chmod 644 /mnt/openvas_log.conf
+        touch /var/log/openvas/openvas.log
+        chmod 666 /var/log/openvas/openvas.log
+
+  # Shows logs of openvas — not required by CyAssure 360's own scan flow, kept
+  # for operators who want to tail openvas.log directly.
+  openvas:
+    image: registry.community.greenbone.net/community/openvas-scanner:stable
+    profiles: ["vulnscan"]
+    volumes:
+      - cy360_gvm_openvas_data:/etc/openvas
+      - cy360_gvm_openvas_log:/var/log/openvas
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat /etc/openvas/openvas.conf
+        tail -f /var/log/openvas/openvas.log
+    depends_on:
+      configure-openvas:
+        condition: service_completed_successfully
+
+  openvasd:
+    image: registry.community.greenbone.net/community/openvas-scanner:stable
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    environment:
+      # `service_notus` disables everything but notus — if you want to use
+      # openvasd directly, remove OPENVASD_MODE (upstream's own comment).
+      OPENVASD_MODE: service_notus
+      GNUPGHOME: /etc/openvas/gnupg
+      LISTENING: 0.0.0.0:80
+    # Uncomment to reach openvasd's HTTP API directly from the host:
+    # ports:
+    #   - "127.0.0.1:3000:80"
+    volumes:
+      - cy360_gvm_openvas_data:/etc/openvas
+      - cy360_gvm_openvas_log:/var/log/openvas
+      - cy360_gvm_gpg_data:/etc/openvas/gnupg
+      - cy360_gvm_notus_data:/var/lib/notus
+    depends_on:
+      vulnerability-tests:
+        condition: service_healthy
+      notus-data:
+        condition: service_healthy
+      configure-openvas:
+        condition: service_completed_successfully
+      gpg-data:
+        condition: service_completed_successfully
+    networks:
+      default:
+        aliases:
+          - openvasd
+
+  ospd-openvas:
+    image: registry.community.greenbone.net/community/ospd-openvas:stable
+    profiles: ["vulnscan"]
+    restart: unless-stopped
+    hostname: ospd-openvas.local
+    cap_add:
+      - NET_ADMIN  # for capturing packets in promiscuous mode
+      - NET_RAW    # for raw sockets, e.g. the boreas alive-detection engine
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    command:
+      [
+        "ospd-openvas",
+        "-f",
+        "--config",
+        "/etc/gvm/ospd-openvas.conf",
+        "--notus-feed-dir",
+        "/var/lib/notus/advisories",
+        "-m",
+        "666",
+      ]
+    volumes:
+      - cy360_gvm_gpg_data:/etc/openvas/gnupg
+      - cy360_gvm_vt_data:/var/lib/openvas/plugins
+      - cy360_gvm_notus_data:/var/lib/notus
+      - cy360_gvm_ospd_socket:/run/ospd
+      - cy360_gvm_redis_socket:/run/redis/
+      - cy360_gvm_openvas_data:/etc/openvas/
+      - cy360_gvm_openvas_log:/var/log/openvas
+    depends_on:
+      redis-server:
+        condition: service_started
+      gpg-data:
+        condition: service_completed_successfully
+      configure-openvas:
+        condition: service_completed_successfully
+      vulnerability-tests:
+        condition: service_healthy
+      notus-data:
+        condition: service_healthy
+
+  # Optional CLI/debugging helper (gvm-cli, gvm-pyshell) — not required by
+  # CyAssure 360 itself, kept only for operators who want to poke gvmd directly.
+  gvm-tools:
+    image: registry.community.greenbone.net/community/gvm-tools
+    profiles: ["vulnscan"]
+    volumes:
+      - /opt/cyassure/gvm-socket:/run/gvmd
+      - cy360_gvm_ospd_socket:/run/ospd
+    depends_on:
+      - gvmd
+      - ospd-openvas
+
+volumes:
+  cy360_gvm_vt_data:
+  cy360_gvm_notus_data:
+  cy360_gvm_scap_data:
+  cy360_gvm_cert_data:
+  cy360_gvm_data_objects:
+  cy360_gvm_gpg_data:
+  cy360_gvm_redis_socket:
+  cy360_gvm_psql_data:
+  cy360_gvm_psql_socket:
+  cy360_gvm_gvmd_data:
+  cy360_gvm_ospd_socket:
+  cy360_gvm_gsa_data:
+  cy360_gvm_nginx_config:
+  cy360_gvm_nginx_certs:
+  cy360_gvm_openvas_data:
+  cy360_gvm_openvas_log:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.163 -- 2026-09-19 22:51 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.166 -- 2026-09-20 10:05 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.163"
+_SCRIPT_VERSION="v0.0.166"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -691,6 +691,19 @@ if [[ "$MODE" == "full" ]]; then
             sed -i "s|^GH_TOKEN=.*|GH_TOKEN=$(_escape_sed_repl "${GH_TOKEN:-}")|" .env
             sed -i "s|^COMPOSE_PROJECT_DIR=.*|COMPOSE_PROJECT_DIR=$(pwd)|" .env
             sed -i "s|^COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=${_app_proj_name}|" .env
+            # Pin the exact resolved release, not .env.example's own literal
+            # "latest" default. Without this, `docker compose pull` below
+            # falls through to CYASSURE_VERSION's ${:-latest} default and
+            # floats on ghcr.io's :latest image tag instead of the numbered
+            # tag this script just reported installing — and that :latest
+            # tag isn't guaranteed to match the highest version number (a
+            # 2026-09-20 incident found it briefly pointing at an older
+            # release whose build happened to finish last). Pinning the
+            # already-resolved ${_APP_TAG} here makes a fresh install
+            # immune to that regardless of what's wrong with :latest at
+            # install time, and regardless of what version is actually
+            # newest when this runs.
+            sed -i "s|^CYASSURE_VERSION=.*|CYASSURE_VERSION=${_APP_TAG#v}|" .env
             success ".env created — edit it later for OAuth/SMTP/etc, none of that is required to start."
         else
             info ".env already exists — leaving it as-is."
