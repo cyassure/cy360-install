@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.178 -- 2026-09-20 21:35 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.179 -- 2026-09-21 08:55 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -341,7 +341,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.178"
+_SCRIPT_VERSION="v0.0.179"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1092,39 +1092,17 @@ else
     success "Setup script already current at $_SETUP_DEST"
 fi
 
-# Deploy docker-maintenance.sh alongside setup script
-# Use BUNDLE_DIR so this works in both fresh-install (BUNDLE_DIR==_SCRIPT_DIR) and
-# portal --update paths (script runs from /opt/cyassure but bundle is at /tmp/cyassure-release).
-_MAINT_SRC="${BUNDLE_DIR}/docker-maintenance.sh"
-[[ ! -f "$_MAINT_SRC" ]] && _MAINT_SRC="${_SCRIPT_DIR}/docker-maintenance.sh"   # fallback for dev
-_MAINT_DEST="/opt/cyassure/docker-maintenance.sh"
-if [[ -f "$_MAINT_SRC" ]]; then
-    if [[ "$(realpath "$_MAINT_SRC")" != "$(realpath "$_MAINT_DEST" 2>/dev/null)" ]]; then
-        cp "$_MAINT_SRC" "$_MAINT_DEST"
-        chmod 750 "$_MAINT_DEST"
-        success "docker-maintenance.sh deployed to ${_MAINT_DEST}"
-    else
-        success "docker-maintenance.sh already at ${_MAINT_DEST} — no copy needed"
-    fi
-else
-    # Not in bundle — check if a previous install already deployed it.
-    # If so, keep the existing copy silently.
-    # If not, this is a fresh server: the Flask backend generates and writes
-    # docker-maintenance.sh automatically the first time the Scheduler is saved
-    # in System Settings → Scheduler (via _write_docker_maintenance_script()).
-    # No manual action is required.
-    if [[ -f "$_MAINT_DEST" ]]; then
-        success "docker-maintenance.sh already present at ${_MAINT_DEST} — keeping existing copy"
-    else
-        info "docker-maintenance.sh not in bundle — will be created automatically when Scheduler is saved in System Settings"
-    fi
-fi
-
-# NOTE: Docker maintenance schedule is managed by the CyAssure 360 Scheduler
-# (System Settings → Scheduler tab). When the schedule is enabled and saved,
-# the Flask backend generates and writes docker-maintenance.sh to /opt/cyassure/
-# automatically (via _write_docker_maintenance_script() in blueprints/system/routes.py).
-# cron entries are written by the portal's /api/system/schedules endpoint.
+# Docker Maintenance (Settings → Scheduler) no longer deploys or shells out to
+# a local /opt/cyassure/docker-maintenance.sh — that script ran as a subprocess
+# inside the `backend` container, which has neither the `docker` CLI nor
+# docker.sock, so every scheduled run silently did nothing ("docker: command
+# not found" on every line, found from a disk-full incident, 2026-09-21).
+# The actual prune commands now run in the `updater` sidecar (the one
+# container with real docker.sock access — see updater/server.py's
+# _run_docker_maintenance()), invoked over HTTP by backend's own APScheduler
+# (blueprints/scheduler/routes.py's _run_docker_maintenance_job). Stale
+# /opt/cyassure/docker-maintenance.sh copies from older installs are left in
+# place (harmless, unreferenced) rather than actively removed here.
 
 # Deploy license validator + watchdog scripts
 _SCRIPT_BASE="$(dirname "$_SCRIPT_ABS_PATH")"

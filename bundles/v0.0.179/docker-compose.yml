@@ -1,4 +1,4 @@
-# CyAssure 360 — deployment bundle (v0.0.150)
+# CyAssure 360 — deployment bundle (v0.0.179)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
@@ -32,7 +32,7 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.0.150}
+    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.0.179}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — roadmap item #34 Phase 2: corruser is a
@@ -131,7 +131,7 @@ services:
       retries: 3
 
   cysiemstack-engine:
-    image: ghcr.io/cyassure/cy360-engine:${CYASSURE_VERSION:-0.0.150}
+    image: ghcr.io/cyassure/cy360-engine:${CYASSURE_VERSION:-0.0.179}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -158,7 +158,7 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.0.150}
+    image: ghcr.io/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.0.179}
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:80"
@@ -242,7 +242,7 @@ services:
   # shipped the broken command.  finds the module correctly via
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
-    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.0.150}
+    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.0.179}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
@@ -281,7 +281,7 @@ services:
   # comment COMPOSE_PROFILES out in .env and use the SSH command those same
   # UI screens generate as a fallback either way.
   updater:
-    image: ghcr.io/cyassure/cy360-updater:${CYASSURE_VERSION:-0.0.150}
+    image: ghcr.io/cyassure/cy360-updater:${CYASSURE_VERSION:-0.0.179}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
