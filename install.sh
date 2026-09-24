@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.0.196 -- 2026-09-23 19:49 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.0.200 -- 2026-09-24 11:40 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -182,7 +182,37 @@ _LIC_FILE="/opt/cyassure/cyassure.lic"
     [[ -f "$_LIC_FILE_LOCAL" ]] && _LIC_FILE="$_LIC_FILE_LOCAL"
 
 # ── Certbot environment: set during fresh install prompt (Step 1a below) ─────
-CERTBOT_ENV="--staging"   # safe default; overridden to "" for PROD during fresh install
+# Two ways this used to silently come out as --staging after PROD was chosen
+# (found live on CY360-DEV 2026-09-24 — certbot log showed `--staging` and a
+# "(STAGING) Artificial Amaranth" issuer right after an interactive PROD pick,
+# Cloudflare then 526'd the domain):
+#   1. The "DOWNLOAD RELEASE BUNDLE" step re-execs this script from line 1
+#      on every fresh install (the bundle copy always differs from the
+#      not-yet-existing /opt/cyassure/cyassure-setup.sh). The PROD answer was
+#      exported as CERTBOT_ENV="", but this line unconditionally reset it to
+#      --staging on the re-exec'd pass, and the prompt block (guarded by
+#      _CYASSURE_PROMPTS_DONE) never ran again to correct it.
+#   2. CYASSURE_SETUP_ENV (the Setup Wizard's generated command) was only
+#      read inside the fresh-install-only prompt block, so every wizard run
+#      against an already-installed server ignored its PROD choice entirely.
+if [[ -n "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
+    CERTBOT_ENV="${CERTBOT_ENV-}"   # inherited from the pre-re-exec process, "" = PROD
+else
+    CERTBOT_ENV="--staging"         # safe default when nothing says otherwise
+    case "${CYASSURE_SETUP_ENV:-}" in
+        prod|1) CERTBOT_ENV="" ;;
+        staging|2) ;;
+        "")
+            # Non-fresh run with no explicit choice (e.g. plain --update):
+            # don't downgrade a server that already has a real cert — keep
+            # renewing against production.
+            for _rc in /etc/letsencrypt/renewal/*.conf; do
+                [[ -f "$_rc" ]] || continue
+                grep -qE "^server[[:space:]]*=.*acme-v02\.api\.letsencrypt\.org" "$_rc" && { CERTBOT_ENV=""; break; }
+            done
+            ;;
+    esac
+fi
 
 if [[ "$MODE" == "full" ]]; then
     # Write embedded validator to a secure temp file
@@ -341,7 +371,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.0.196"
+_SCRIPT_VERSION="v0.0.200"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -553,6 +583,15 @@ if [[ -z "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
     # Export every collected decision (plus the guard itself) so they survive
     # the self-update re-exec further down.
     export BASE_DOMAIN CERTBOT_ENV
+    # TLS answers must survive the re-exec too — TLS_MODE is re-initialised
+    # from CYASSURE_SETUP_TLS_MODE at the top of the script, so an interactive
+    # dns01/byo/selfsigned/none pick was otherwise lost and silently became
+    # http01 (the later safety-net default), along with the DNS API token and
+    # BYO cert paths, which weren't exported at all.
+    export CYASSURE_SETUP_TLS_MODE="${TLS_MODE:-}"
+    export CYASSURE_SETUP_DNS_API_TOKEN="${CYASSURE_SETUP_DNS_API_TOKEN:-}"
+    export CYASSURE_SETUP_CERT_PATH="${CYASSURE_SETUP_CERT_PATH:-}"
+    export CYASSURE_SETUP_KEY_PATH="${CYASSURE_SETUP_KEY_PATH:-}"
     export _CYASSURE_PROMPTS_DONE=1
 
 fi
