@@ -1,0 +1,184 @@
+<!--
+  CyAssure 360 — Sysmon Configuration
+  Deploy: copy to Windows endpoint alongside deploy_sysmon.ps1, then run as Administrator.
+  The script at /opt/cyassure/sysmon/deploy_sysmon.ps1 handles install/update.
+
+  EventIDs enabled and why:
+    1  — ProcessCreate       : parent-child chains (rules 100300, 100303)
+    3  — NetworkConnect      : C2 beaconing/lateral movement
+    6  — DriverLoaded        : USB USBSTOR driver (rule 100911), rootkit drivers
+    7  — ImageLoaded         : DLL hijacking detection (signed=false filter)
+    8  — CreateRemoteThread  : injection (rule 101011)
+    10 — ProcessAccess       : LSASS read/dup handle (rule 101012)
+    11 — FileCreate          : dropper/payload writes
+    12 — RegistryEvent       : persistence key creation/deletion (T1547)
+    13 — RegistryEvent       : persistence value set (T1547)
+    22 — DnsQuery            : C2 domain beaconing
+    25 — ProcessTampering    : hollowing/image unmapping (rule 101013)
+
+  Excluded noisy EventIDs (not useful for CyAssure detection):
+    2  — FileCreationTimeChanged (anti-forensic timestomping — too noisy without tuning)
+    4  — ServiceStateChange (covered by Windows System EventID 7036 in agent.conf)
+    5  — ProcessTerminate     (no detection value; very high volume)
+    9  — RawAccessRead        (noisy; covered by LSASS rule via EventID 10)
+    15 — FileCreateStreamHash (ADS — enabled selectively in enterprise; off by default)
+    17 — PipeEvent (CreatePipe) — partial coverage via NetworkConnect
+    18 — PipeEvent (ConnectPipe)
+    23 — FileDelete (covered by syscheck FIM)
+-->
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>md5,sha256</HashAlgorithms>
+  <CheckRevocation>False</CheckRevocation>
+
+  <EventFiltering>
+
+    <!-- ── EventID 1: ProcessCreate ──────────────────────────────────────── -->
+    <!-- Exclude high-volume system noise; keep everything else for rule 100303 -->
+    <RuleGroup name="ProcessCreate" groupRelation="or">
+      <ProcessCreate onmatch="exclude">
+        <!-- Windows update and service control — very high volume, zero detection value -->
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+        <Image condition="is">C:\Windows\System32\SearchIndexer.exe</Image>
+        <Image condition="is">C:\Windows\System32\backgroundTaskHost.exe</Image>
+        <ParentImage condition="is">C:\Windows\System32\services.exe</ParentImage>
+        <!-- AV/EDR sensor processes that spawn frequently -->
+        <Image condition="contains">MsMpEng.exe</Image>
+        <Image condition="contains">NisSrv.exe</Image>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- ── EventID 3: NetworkConnect ─────────────────────────────────────── -->
+    <!-- Only outbound connections on unusual ports + common C2 ports -->
+    <RuleGroup name="NetworkConnect" groupRelation="or">
+      <NetworkConnect onmatch="include">
+        <!-- Uncommon outbound ports used by C2 frameworks (Cobalt Strike, Metasploit) -->
+        <DestinationPort condition="is">4444</DestinationPort>
+        <DestinationPort condition="is">8080</DestinationPort>
+        <DestinationPort condition="is">8443</DestinationPort>
+        <DestinationPort condition="is">1337</DestinationPort>
+        <DestinationPort condition="is">9999</DestinationPort>
+        <!-- DNS over non-standard port (DNS tunneling) -->
+        <DestinationPort condition="is">5353</DestinationPort>
+        <!-- HTTPS from non-browser processes (LOLBin C2) -->
+        <DestinationPort condition="is">443</DestinationPort>
+        <DestinationPort condition="is">80</DestinationPort>
+      </NetworkConnect>
+      <NetworkConnect onmatch="exclude">
+        <!-- Exclude browsers (noisy; covered by proxy/DNS logs) -->
+        <Image condition="contains">chrome.exe</Image>
+        <Image condition="contains">msedge.exe</Image>
+        <Image condition="contains">firefox.exe</Image>
+        <!-- Exclude Windows update -->
+        <Image condition="contains">WindowsUpdate</Image>
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <!-- ── EventID 6: DriverLoaded ───────────────────────────────────────── -->
+    <!-- Catch unsigned/unverified drivers + USB storage driver (rule 100911) -->
+    <RuleGroup name="DriverLoaded" groupRelation="or">
+      <DriverLoaded onmatch="include">
+        <!-- Unsigned drivers — rootkit / bootkit indicator -->
+        <Signed condition="is">false</Signed>
+        <!-- USB storage driver (USBSTOR) — rule 100911 -->
+        <ImageLoaded condition="contains">USBSTOR</ImageLoaded>
+        <ImageLoaded condition="contains">usbstor</ImageLoaded>
+      </DriverLoaded>
+    </RuleGroup>
+
+    <!-- ── EventID 7: ImageLoaded ─────────────────────────────────────────── -->
+    <!-- DLL hijacking: unsigned DLLs loaded by signed system processes -->
+    <RuleGroup name="ImageLoaded" groupRelation="and">
+      <ImageLoaded onmatch="include">
+        <Signed condition="is">false</Signed>
+        <!-- Only care about unsigned DLLs in system paths (not user installs) -->
+        <ImageLoaded condition="begin with">C:\Windows\</ImageLoaded>
+      </ImageLoaded>
+    </RuleGroup>
+
+    <!-- ── EventID 8: CreateRemoteThread ─────────────────────────────────── -->
+    <!-- All cross-process thread injection — rule 101011 fires on all of these -->
+    <RuleGroup name="CreateRemoteThread" groupRelation="or">
+      <CreateRemoteThread onmatch="exclude">
+        <!-- Known legitimate injectors -->
+        <SourceImage condition="is">C:\Windows\System32\csrss.exe</SourceImage>
+        <!-- Windows Defender ATP sensor (legitimate EDR injection) -->
+        <SourceImage condition="contains">MsSense.exe</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+    <!-- ── EventID 10: ProcessAccess ─────────────────────────────────────── -->
+    <!-- LSASS handle access — credential dump (rule 101012) -->
+    <RuleGroup name="ProcessAccess" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">lsass.exe</TargetImage>
+        <TargetImage condition="end with">winlogon.exe</TargetImage>
+        <TargetImage condition="end with">sass.exe</TargetImage>
+      </ProcessAccess>
+      <ProcessAccess onmatch="exclude">
+        <!-- Windows Security / Defender reading LSASS legitimately -->
+        <SourceImage condition="contains">MsMpEng.exe</SourceImage>
+        <SourceImage condition="contains">MsSense.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\werfault.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\WerFaultSecure.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\svchost.exe</SourceImage>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- ── EventID 11: FileCreate ────────────────────────────────────────── -->
+    <!-- Dropper/payload writes in common staging directories -->
+    <RuleGroup name="FileCreate" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">\AppData\Local\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\Users\Public\</TargetFilename>
+        <TargetFilename condition="contains">\Windows\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\ProgramData\</TargetFilename>
+        <!-- Executable extensions dropped anywhere -->
+        <TargetFilename condition="end with">.exe</TargetFilename>
+        <TargetFilename condition="end with">.dll</TargetFilename>
+        <TargetFilename condition="end with">.ps1</TargetFilename>
+        <TargetFilename condition="end with">.bat</TargetFilename>
+        <TargetFilename condition="end with">.vbs</TargetFilename>
+        <TargetFilename condition="end with">.hta</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+
+    <!-- ── EventIDs 12+13: RegistryEvent ─────────────────────────────────── -->
+    <!-- Persistence keys: Run, RunOnce, Services, Winlogon, AppInit, Scheduled Tasks -->
+    <RuleGroup name="RegistryEvent" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">HKLM\SYSTEM\CurrentControlSet\Services</TargetObject>
+        <TargetObject condition="contains">HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon</TargetObject>
+        <TargetObject condition="contains">HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options</TargetObject>
+        <TargetObject condition="contains">AppInit_DLLs</TargetObject>
+        <TargetObject condition="contains">HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <!-- ── EventID 22: DnsQuery ──────────────────────────────────────────── -->
+    <!-- All DNS queries — beacon pattern detection via correlation rules -->
+    <RuleGroup name="DnsQuery" groupRelation="or">
+      <DnsQuery onmatch="exclude">
+        <!-- Exclude Microsoft CDN and update domains — very high volume -->
+        <QueryName condition="end with">.microsoft.com</QueryName>
+        <QueryName condition="end with">.windows.com</QueryName>
+        <QueryName condition="end with">.windowsupdate.com</QueryName>
+        <QueryName condition="end with">.msftconnecttest.com</QueryName>
+        <!-- Common legitimate CDNs -->
+        <QueryName condition="end with">.akamai.net</QueryName>
+        <QueryName condition="end with">.cloudfront.net</QueryName>
+      </DnsQuery>
+    </RuleGroup>
+
+    <!-- ── EventID 25: ProcessTampering ──────────────────────────────────── -->
+    <!-- Process hollowing, image unmapping, overwrite — rule 101013 -->
+    <!-- No exclusions: all process tampering is suspicious -->
+    <RuleGroup name="ProcessTampering" groupRelation="or">
+      <ProcessTampering onmatch="exclude">
+      </ProcessTampering>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>
