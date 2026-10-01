@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.9.3 -- 2026-10-01 10:26 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.10.0 -- 2026-10-01 15:02 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -371,7 +371,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.9.3"
+_SCRIPT_VERSION="v0.10.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1968,6 +1968,9 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ${_hsts}
     add_header X-Content-Type-Options "nosniff" always;
+    # Same limit as portal/nginx.conf — nginx's 1 MB default refuses sandbox
+    # samples, EDR agent sample uploads and larger case evidence.
+    client_max_body_size 110m;
     # oauth2-proxy's own paths (sign_in, callback, sign_out, the internal
     # /oauth2/auth check) — these must reach oauth2-proxy ITSELF, port 4180,
     # never the app. Missed on the first pass of this fix: once / stopped
