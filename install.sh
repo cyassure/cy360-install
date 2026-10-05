@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.16.0 -- 2026-10-04 05:42 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.16.1 -- 2026-10-05 09:32 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -371,7 +371,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.16.0"
+_SCRIPT_VERSION="v0.16.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -764,6 +764,23 @@ if [[ "$MODE" == "full" ]]; then
 
         info "Starting the application..."
         docker compose up -d
+
+        # Remove superseded CyAssure release images (~8GB each for backend).
+        # Nothing else reclaims them, and on a frequently-updated host they
+        # fill the disk until db/redpanda crash-loop on ENOSPC. `docker rmi`
+        # without -f refuses any image a container still references, so the
+        # images just started above are untouched. The updater sidecar does
+        # the same after portal Update/Upgrade and on a daily sweep.
+        _PINNED_TAG=$(grep -m1 '^CYASSURE_VERSION=' .env | cut -d= -f2 || true)
+        _PINNED_TAG="${_PINNED_TAG#v}"
+        _PRUNED=0
+        while read -r _img; do
+            [[ -z "$_img" || "$_img" == *":<none>" ]] && continue
+            [[ -n "$_PINNED_TAG" && "${_img##*:}" == "$_PINNED_TAG" ]] && continue
+            docker rmi "$_img" >/dev/null 2>&1 && _PRUNED=$((_PRUNED + 1))
+        done < <(docker image ls --filter 'reference=ghcr.io/cyassure/cy360-*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+        docker image prune -f >/dev/null 2>&1 || true
+        [[ $_PRUNED -gt 0 ]] && info "Removed ${_PRUNED} superseded CyAssure image tag(s)"
 
         _APP_PORT=$(grep -m1 '^APP_PORT=' .env | cut -d= -f2); _APP_PORT="${_APP_PORT:-8080}"
         success "CyAssure 360 ${_APP_TAG} is starting in $(pwd)/"
@@ -2471,7 +2488,7 @@ if [[ -f "$_NGINX_MOD" ]] && grep -q 'cors_origin\|Access-Control-Allow-Origin' 
 
     # ── Inject /edr-packages/ nginx location if missing (idempotent) ────────────
     # Serves pre-built CyEDR agent binaries (.deb/.rpm/.msi/.pkg + standalone exe).
-    # Built by agent/packages/build-edr-packages.sh; stored in the edr/ subdirectory.
+    # Built by cy360-edr build-agent.yml (agent-go `make build`); stored in the edr/ subdirectory.
     if [[ -f "$_NGINX_MOD" ]] && ! grep -q '/edr-packages/' "$_NGINX_MOD" 2>/dev/null; then
         python3 - "$_NGINX_MOD" << 'EDR_PKG_NGINX_PY'
 import sys, re
@@ -2732,10 +2749,10 @@ if [[ -d "$_bundle_edr" ]]; then
     if [[ $_edr_seeded -gt 0 ]]; then
         success "Linux CyEDR agent/tray binaries staged from host-assets bundle: ${_edr_seeded} file(s) → ${_edr_dest}"
     else
-        warn "Host-assets bundle has no Linux CyEDR agent/tray binaries (build-and-publish's inline Linux build likely failed this release) — there is no fallback anymore (Python-mode installer removed 2026-08-25): Linux EDR installs will hard-fail until the next successful release, or run agent/packages/build-edr-packages.sh manually to stage them now"
+        warn "Host-assets bundle has no Linux CyEDR agent/tray binaries (build-and-publish's inline Linux build likely failed this release) — there is no fallback anymore (Python-mode installer removed 2026-08-25): Linux EDR installs will hard-fail until the next successful release, or build them with `make build` in cy360-edr/agent-go and stage them manually"
     fi
 else
-    warn "No agent-packages/edr/ in host-assets bundle — Linux CyEDR binary quick-install unavailable until the next release; run agent/packages/build-edr-packages.sh manually to stage them now"
+    warn "No agent-packages/edr/ in host-assets bundle — Linux CyEDR binary quick-install unavailable until the next release; build them with `make build` in cy360-edr/agent-go and stage them manually"
 fi
 
 # ── Seed macOS/Windows CyEDR binaries directly from release assets ──────────
