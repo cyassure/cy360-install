@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.21.0 -- 2026-10-08 08:15 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.22.0 -- 2026-10-08 11:18 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -112,6 +112,38 @@ gen_pass()   { openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20; }
 _port_up()   { ss -tlnp 2>/dev/null | grep -q ":${1} "; }
 # Escape a string for use as the replacement field in a sed s|...|...|  expression.
 # Handles: \ (escape char), | (our delimiter), & (sed backreference).
+# Copy each stack container's new log lines to /opt/cyassure/container-logs/
+# before `docker compose up` may recreate it — a recreated container's log is
+# deleted with the old container. Same layout and .since/<id> markers as the
+# updater sidecar's _archive_container_logs (updater/server.py), so the two
+# never duplicate lines. Run from the compose project directory. Never fails.
+archive_container_logs() {
+    local dir=/opt/cyassure/container-logs cid svc since started stamp out n keep
+    command -v docker &>/dev/null || return 0
+    keep=$(grep -m1 '^CONTAINER_LOG_RETENTION_DAYS=' .env 2>/dev/null | cut -d= -f2 || true)
+    [[ "$keep" =~ ^[1-9][0-9]*$ ]] || keep=30
+    mkdir -p "$dir/.since" 2>/dev/null && chmod 750 "$dir" "$dir/.since" 2>/dev/null || return 0
+    while IFS=$'\t' read -r cid svc; do
+        [[ "$cid" =~ ^[0-9a-f]{12,64}$ && "$svc" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+        mkdir -p "$dir/$svc" && chmod 750 "$dir/$svc"
+        since=""
+        [[ -f "$dir/.since/$cid" ]] && since=$(cat "$dir/.since/$cid")
+        started=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        out="$dir/$svc/$svc-$stamp-${cid:0:12}.log.gz"; n=1
+        while [[ -e "$out" ]]; do out="$dir/$svc/$svc-$stamp-${cid:0:12}-$n.log.gz"; n=$((n + 1)); done
+        if docker logs --timestamps ${since:+--since "$since"} "$cid" 2>&1 | gzip > "$out.part" \
+            && [[ -n "$(gzip -cd "$out.part" | head -c1)" ]]; then
+            chmod 640 "$out.part" && mv "$out.part" "$out" && echo "$started" > "$dir/.since/$cid"
+        else
+            rm -f "$out.part"
+        fi
+    done < <(docker compose ps -a --format '{{.ID}}{{"\t"}}{{.Service}}' 2>/dev/null || true)
+    find "$dir" -type f -mtime "+$keep" -delete 2>/dev/null || true
+    info "Container logs archived to $dir (kept $keep days)"
+    return 0
+}
+
 _escape_sed_repl() { local s="$1"; s="${s//\\/\\\\}"; s="${s//|/\\|}"; s="${s//&/\\&}"; printf '%s' "$s"; }
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
@@ -371,7 +403,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.21.0"
+_SCRIPT_VERSION="v0.22.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -762,6 +794,7 @@ if [[ "$MODE" == "full" ]]; then
         info "Pulling images..."
         docker compose pull
 
+        archive_container_logs
         info "Starting the application..."
         docker compose up -d
 
@@ -1663,6 +1696,7 @@ if [[ -f ./.env ]]; then
         success "Synced BASE_DOMAIN=${BASE_DOMAIN} into ./.env (app config)"
         if command -v docker &>/dev/null && docker compose ps backend &>/dev/null; then
             info "Recreating the backend container to pick up the new domain..."
+            archive_container_logs
             docker compose up -d --no-deps --force-recreate backend 2>/dev/null \
                 && success "backend restarted with the new domain" \
                 || warn "Could not restart backend automatically — run this from the app's install directory: docker compose up -d --force-recreate backend"
