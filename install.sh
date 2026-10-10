@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.25.1 -- 2026-10-10 03:56 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.26.1 -- 2026-10-10 07:07 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -282,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.25.1"
+_SCRIPT_VERSION="v0.26.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -876,7 +876,7 @@ else
             curl -fsSL "${_HA_BASE}/scripts/cyedr-install.ps1"                      -o "$BUNDLE_DIR/scripts/cyedr-install.ps1"                      2>/dev/null
             curl -fsSL "${_HA_BASE}/scripts/cyedr-uninstall.sh"                     -o "$BUNDLE_DIR/scripts/cyedr-uninstall.sh"                     2>/dev/null
             curl -fsSL "${_HA_BASE}/scripts/cyedr-uninstall.ps1"                    -o "$BUNDLE_DIR/scripts/cyedr-uninstall.ps1"                    2>/dev/null
-            curl -fsSL "${_HA_BASE}/agent/AGENT_VERSION"                            -o "$BUNDLE_DIR/agent/AGENT_VERSION"                            2>/dev/null
+            curl -fsSL "${_HA_BASE}/agent/AGENT_VERSION_GO"                         -o "$BUNDLE_DIR/agent/AGENT_VERSION_GO"                         2>/dev/null
             curl -fsSL "${_HA_BASE}/agent/assets/yara/cyassure.yar"                 -o "$BUNDLE_DIR/agent/assets/yara/cyassure.yar"                 2>/dev/null
             curl -fsSL "${_HA_BASE}/agent/assets/sysmon/cyassure_sysmon_config.xml" -o "$BUNDLE_DIR/agent/assets/sysmon/cyassure_sysmon_config.xml" 2>/dev/null
             curl -fsSL "${_HA_BASE}/RELEASE_NOTES.md"                               -o "$BUNDLE_DIR/RELEASE_NOTES.md"                               2>/dev/null
@@ -1002,7 +1002,7 @@ for _edr_src_dest in \
     "${BUNDLE_DIR}/scripts/cyedr-install.ps1:cyedr-install.ps1" \
     "${BUNDLE_DIR}/scripts/cyedr-uninstall.sh:cyedr-uninstall.sh" \
     "${BUNDLE_DIR}/scripts/cyedr-uninstall.ps1:cyedr-uninstall.ps1" \
-    "${BUNDLE_DIR}/agent/AGENT_VERSION:AGENT_VERSION" \
+    "${BUNDLE_DIR}/agent/AGENT_VERSION_GO:AGENT_VERSION_GO" \
     "${BUNDLE_DIR}/agent/assets/yara/cyassure.yar:cyassure.yar"; do
     _src="${_edr_src_dest%%:*}"
     _dst_name="${_edr_src_dest##*:}"
