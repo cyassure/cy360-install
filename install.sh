@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.24.0 -- 2026-10-09 07:44 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.25.1 -- 2026-10-10 03:56 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -204,9 +204,7 @@ if [[ -n "$TLS_MODE" ]]; then
 fi
 
 
-# ── License check (full install only — updates are always allowed) ────────────
-# Validator is embedded as a heredoc — single-file installer, no external
-# license_validator.py required alongside the script or binary.
+# ── License presence check (full install only — informational) ───────────────
 _LIC_FILE="/opt/cyassure/cyassure.lic"
 # Also accept a .lic placed alongside this script (for licensed one-file installs)
 [[ ! -f "$_LIC_FILE" ]] && \
@@ -247,134 +245,15 @@ else
 fi
 
 if [[ "$MODE" == "full" ]]; then
-    # Write embedded validator to a secure temp file
-    _VALIDATOR_DEST="/tmp/cyassure_license_validator_$$.py"
-    cat > "$_VALIDATOR_DEST" << 'CYASSURE_VALIDATOR_EOF'
-#!/usr/bin/env python3
-import base64, json, os, subprocess, sys, tempfile
-from datetime import date
-from pathlib import Path
-
-CYASSURE_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3PWTGpjM9/RTMTA4FMmj
-coYBxAEtckGxiv/Vf9vtZHbZBsoqaZk+Fx30DeiHCD2x0P//xkLxb/+yhY4vGsx5
-cYEJpUHCxlskxFaBlBOQmZGIqgq6BHicfEnAiRCmmX6GznmCNPzqIIgXXtTOVILz
-ez/oTDQkfNp5z3qrHK9XAqleqHehyJR3genS9XAPB8sNey6RfjYPa4FZixm4O7DI
-i0nQeWeGjhPeZLaWo+BIGeMzCZQZpLOg4HBvsdNQZ9Jp4ktHnPKAFqyLzI+4BctE
-o6cG5hWtmCcvUXWwzB+5YTPmMDp28kRNNOyMLo9DPsS6LHcW5R96uEXsyE8G1lZo
-oQIDAQAB
------END PUBLIC KEY-----
-"""
-LICENSE_PATH  = Path("/opt/cyassure/cyassure.lic")
-
-def _verify_signature(payload_str, sig_b64):
-    try: sig_bytes = base64.b64decode(sig_b64)
-    except Exception: return False
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as kf:
-        kf.write(CYASSURE_PUBLIC_KEY); kf_path = kf.name
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".sig") as sf:
-        sf.write(sig_bytes); sf_path = sf.name
-    try:
-        p = subprocess.run(["openssl","dgst","-sha256","-verify",kf_path,"-signature",sf_path],
-                           input=payload_str.encode(), capture_output=True)
-        return p.returncode == 0
-    except FileNotFoundError: return False
-    finally: os.unlink(kf_path); os.unlink(sf_path)
-
-def _parse_lic_file(path):
-    try: text = path.read_text()
-    except Exception: return None, None
-    try:
-        pb64 = text.split("-----BEGIN CYASSURE LICENSE-----")[1].split("-----END CYASSURE LICENSE-----")[0].strip()
-        sb64 = text.split("-----BEGIN CYASSURE SIGNATURE-----")[1].split("-----END CYASSURE SIGNATURE-----")[0].strip()
-        ps   = base64.b64decode(pb64).decode()
-        return json.loads(ps), sb64, ps
-    except Exception: return None, None, None
-
-def _days_remaining(exp): return (date.fromisoformat(exp) - date.today()).days
-
-def validate(lic_path=LICENSE_PATH):
-    # No license file -> Community Edition. Permanent, no countdown, no expiry -- this
-    # is a real edition, not a trial. (There used to be a time-boxed local "demo" here;
-    # that predates the 2026-08-02 permanent Community/Enterprise licensing model and
-    # is gone. See DOCKER_DEPLOYMENT.md section 5 / core/license_validator.py for the
-    # same rule enforced at runtime by the app itself.)
-    p = Path(lic_path)
-    if not p.exists():
-        return {"valid":True,"type":"community","days_remaining":None,"features":[],
-                "customer":"Community","message":"No license file — running Community Edition (free forever)"}
-    r = _parse_lic_file(p)
-    if len(r) == 2:
-        return {"valid":False,"type":"none","days_remaining":0,"features":[],"customer":"unknown",
-                "message":"License file is corrupt or unreadable"}
-    payload, sig_b64, payload_str = r
-    if payload is None:
-        return {"valid":False,"type":"none","days_remaining":0,"features":[],"customer":"unknown",
-                "message":"License file could not be parsed"}
-    if not _verify_signature(payload_str, sig_b64):
-        return {"valid":False,"type":"none","days_remaining":0,"features":[],
-                "customer":payload.get("customer","unknown"),
-                "message":"License signature is invalid — file may have been tampered"}
-    days = _days_remaining(payload["expires"])
-    if days < 0:
-        return {"valid":False,"type":payload["type"],"days_remaining":0,
-                "features":payload.get("features",[]),"customer":payload["customer"],
-                "message":f"License expired on {payload['expires']}"}
-    return {"valid":True,"type":payload["type"],"days_remaining":days,
-            "features":payload.get("features",[]),"customer":payload["customer"],
-            "message":f"License valid — {days} day(s) remaining (expires {payload['expires']})"}
-
-if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--license", default=str(LICENSE_PATH))
-    ap.add_argument("--quiet", action="store_true")
-    args = ap.parse_args()
-    lic = Path(args.license)
-    result = validate(lic)
-    if not args.quiet: print(json.dumps(result, indent=2))
-    # Exit codes: 0=full, 1=demo, 2=expired, 3=tampered/invalid, 4=no license (auto-demo)
-    if not lic.exists(): sys.exit(4)
-    if result.get("valid"):
-        sys.exit(0 if result.get("type") == "full" else 1)
-    sys.exit(2 if result.get("days_remaining", 1) <= 0 else 3)
-CYASSURE_VALIDATOR_EOF
-    chmod 600 "$_VALIDATOR_DEST"
-
-    set +e
-    _LIC_JSON=$(python3 "$_VALIDATOR_DEST" --license "$_LIC_FILE" 2>/dev/null)
-    _LIC_CODE=$?
-    set -e
-    _LIC_TYPE=$(echo "$_LIC_JSON"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('type','none'))" 2>/dev/null || echo "none")
-    _LIC_DAYS=$(echo "$_LIC_JSON"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('days_remaining',0))" 2>/dev/null || echo "0")
-    _LIC_MSG=$(echo "$_LIC_JSON"   | python3 -c "import sys,json;print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
-    _LIC_CUST=$(echo "$_LIC_JSON"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('customer',''))" 2>/dev/null || echo "")
-    rm -f "$_VALIDATOR_DEST"
-
-    # None of these ever abort the install. A missing/expired/invalid license means
-    # Community Edition, not a blocked install -- Enterprise activates only when a
-    # currently-valid signed license is present. Same rule the running app enforces
-    # itself (core/license_validator.py) and the one documented in
-    # DOCKER_DEPLOYMENT.md section 5 -- this installer used to disagree with both via
-    # a stale pre-2026-08-02 "15-day demo" concept that no longer exists.
-    case $_LIC_CODE in
-        0) success "License: ENTERPRISE — ${_LIC_CUST} — ${_LIC_DAYS} day(s) remaining"
-           CYASSURE_DEMO_MODE=0 ;;
-        1) info "License: time-boxed evaluation — ${_LIC_DAYS} day(s) remaining"
-           CYASSURE_DEMO_MODE=1 ;;
-        2) warn "Enterprise license EXPIRED — ${_LIC_MSG}"
-           warn "Continuing with Community Edition. Renew at https://cyassure.eu to restore Enterprise."
-           CYASSURE_DEMO_MODE=1 ;;
-        3) warn "Enterprise license INVALID — ${_LIC_MSG}"
-           warn "Continuing with Community Edition. Contact support@cyassure.eu if this is unexpected."
-           CYASSURE_DEMO_MODE=1 ;;
-        4|*)
-           info "No license found — running Community Edition (free forever)."
-           info "Place cyassure.lic alongside this script any time to activate Enterprise."
-           CYASSURE_DEMO_MODE=1 ;;
-    esac
-    export CYASSURE_DEMO_MODE
-    export CYASSURE_LICENSE_TYPE="${_LIC_TYPE}"
+    # The licence is validated only by the running backend (signature,
+    # instance binding, grace state). The installer just reports whether a
+    # file is present; it never decides the edition.
+    if [[ -f "$_LIC_FILE" ]]; then
+        info "Licence file found — it will be validated by the platform after start-up (Settings → Licence)."
+    else
+        info "No licence found — running Community Edition (free forever)."
+        info "Upload a licence later in Settings → Licence to activate Enterprise."
+    fi
 fi
 
 # ── ask / ask_secret / ask_yn helpers (interactive fallbacks) ────────────────
@@ -403,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.24.0"
+_SCRIPT_VERSION="v0.25.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1193,37 +1072,14 @@ fi
 # /opt/cyassure/docker-maintenance.sh copies from older installs are left in
 # place (harmless, unreferenced) rather than actively removed here.
 
-# Deploy license validator + watchdog scripts
+# License validation runs only inside the backend image. A copy at
+# /opt/cyassure/license_validator.py used to override it (run as a
+# subprocess), which let anyone with host access replace the licence check.
+# That override is gone; remove any copy an older install left behind.
 _SCRIPT_BASE="$(dirname "$_SCRIPT_ABS_PATH")"
-if [[ -f "$_SCRIPT_BASE/license_validator.py" ]]; then
-    cp "$_SCRIPT_BASE/license_validator.py" /opt/cyassure/license_validator.py
-    chmod 755 /opt/cyassure/license_validator.py
-    success "License validator deployed → /opt/cyassure/license_validator.py"
-elif [[ -f "$BUNDLE_DIR/license_validator.py" ]]; then
-    cp "$BUNDLE_DIR/license_validator.py" /opt/cyassure/license_validator.py
-    chmod 755 /opt/cyassure/license_validator.py
-    success "License validator deployed from bundle"
-else
-    # Not in bundle or alongside installer.
-    # Two self-healing mechanisms exist — no action required:
-    #   1. If /opt/cyassure/license_validator.py already exists (previous install
-    #      or prior --update), it is used as an override by the Flask backend
-    #      (see _LIC_VALIDATOR in blueprints/system/routes.py).
-    #   2. If it does not exist, the Flask license endpoint (_run_validator())
-    #      imports core.license_validator.validate() directly in-process from
-    #      the backend Docker image — no file needs to be staged here at all
-    #      for normal operation (fixed 2026-07-27; this used to reference a
-    #      now-retired "installed cyassure-backend wheel" path that no longer
-    #      exists post Docker-pivot).
-    # The deployed copy at /opt/cyassure/ is only needed for the daily watchdog
-    # cron (itself a known open gap — see this file's header) and for shipping
-    # a vendor-supplied updated validator without a full image rebuild. It is
-    # deployed on the next --update once the file is in the bundle.
-    if [[ -f "/opt/cyassure/license_validator.py" ]]; then
-        success "license_validator.py already present at /opt/cyassure/ — keeping existing copy"
-    else
-        info "license_validator.py not in bundle — license UI uses in-package fallback; daily watchdog will use it once deployed via --update"
-    fi
+if [[ -f /opt/cyassure/license_validator.py ]]; then
+    rm -f /opt/cyassure/license_validator.py
+    info "Removed obsolete /opt/cyassure/license_validator.py override"
 fi
 
 # If a license file is present alongside the installer, copy it in
@@ -2586,9 +2442,8 @@ EDR_PKG_NGINX_PY
 # KNOWN GAP left by this removal (not fixed here, needs separate follow-up):
 # the license-watchdog enforcement (systemd timer that stopped
 # cyassure-backend/cysiemstack-engine on expiry) lived in this block and is
-# removed with it — license_validator.py itself is still staged to
-# /opt/cyassure/license_validator.py above, but nothing currently calls it on
-# a schedule or gates container startup on it for a Docker deployment. A
+# removed with it — nothing currently calls the validator on a schedule or
+# gates container startup on it for a Docker deployment. A
 # real replacement (an APScheduler job inside the Flask container, or a
 # small sidecar that runs `docker compose stop` via the mounted docker
 # socket) needs its own design pass, not a mechanical port.
