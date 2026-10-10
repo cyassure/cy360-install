@@ -1,11 +1,25 @@
-# CyAssure 360 — deployment bundle (v0.10.0)
+# CyAssure 360 — deployment bundle (v0.27.1)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
 #   docker compose up -d      start everything
 #   docker compose down       stop everything (add -v to also wipe the DB)
+# Container logs (2026-10-08). Docker's default json-file driver keeps a
+# container's log only as long as that container exists and never rotates
+# it: every upgrade (which recreates containers) silently deleted all
+# logs, and a busy service could fill the disk. Every service now rotates
+# at max-size x max-file (override in .env); the updater sidecar and
+# cyassure-setup.sh copy each container's log to
+# /opt/cyassure/container-logs/<service>/ before recreating it.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${CYASSURE_LOG_MAX_SIZE:-50m}"
+    max-file: "${CYASSURE_LOG_MAX_FILES:-5}"
+
 services:
   db:
+    logging: *default-logging
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
@@ -21,6 +35,7 @@ services:
       retries: 5
 
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     restart: unless-stopped
     volumes:
@@ -32,7 +47,8 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.10.0}
+    logging: *default-logging
+    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.27.1}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — roadmap item #34 Phase 2: corruser is a
@@ -131,7 +147,8 @@ services:
       retries: 3
 
   cysiemstack-engine:
-    image: ghcr.io/cyassure/cy360-engine:${CYASSURE_VERSION:-0.10.0}
+    logging: *default-logging
+    image: ghcr.io/cyassure/cy360-engine:${CYASSURE_VERSION:-0.27.1}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -158,7 +175,8 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.10.0}
+    logging: *default-logging
+    image: ghcr.io/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.27.1}
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:80"
@@ -180,6 +198,7 @@ services:
   # CyDataLake in the UI (CYDATALAKE_ENABLED, single flag). No published
   # ports on either.
   redpanda:
+    logging: *default-logging
     image: docker.redpanda.com/redpandadata/redpanda:v26.1.14
     command:
       - redpanda
@@ -201,6 +220,7 @@ services:
       retries: 5
 
   clickhouse:
+    logging: *default-logging
     image: clickhouse/clickhouse-server:26.7.1
     restart: unless-stopped
     environment:
@@ -242,7 +262,8 @@ services:
   # shipped the broken command.  finds the module correctly via
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
-    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.10.0}
+    logging: *default-logging
+    image: ghcr.io/cyassure/cy360-backend:${CYASSURE_VERSION:-0.27.1}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
@@ -281,7 +302,8 @@ services:
   # comment COMPOSE_PROFILES out in .env and use the SSH command those same
   # UI screens generate as a fallback either way.
   updater:
-    image: ghcr.io/cyassure/cy360-updater:${CYASSURE_VERSION:-0.10.0}
+    logging: *default-logging
+    image: ghcr.io/cyassure/cy360-updater:${CYASSURE_VERSION:-0.27.1}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
