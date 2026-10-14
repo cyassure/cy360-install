@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.36.0 -- 2026-10-14 01:04 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.37.1 -- 2026-10-14 06:59 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -282,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.36.0"
+_SCRIPT_VERSION="v0.37.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1134,7 +1134,6 @@ if [[ "$MODE" == "full" ]]; then
     fi
     ADMIN_API_KEY=$(gen_secret)
     CYSOAR_OIDC_SECRET=$(gen_secret)
-    CYSIEM_OIDC_SECRET=$(gen_secret)
     CY360SSO_OIDC_SECRET=$(gen_secret)
     # oauth2-proxy: client secret (used by CyAssure OIDC) + 32-byte cookie secret
     OAUTH2PROXY_SECRET=$(gen_secret)
@@ -1196,12 +1195,6 @@ PATCHEOF
         info "Backfilled CLOUD_MISP_API_KEY default"
     fi
 
-
-    # Add CYSIEM_OIDC_SECRET if missing (SSO v1 — introduced with full OIDC)
-    if ! grep -q "^CYSIEM_OIDC_SECRET=" "$_env" 2>/dev/null; then
-        echo "CYSIEM_OIDC_SECRET=$(openssl rand -hex 32)" >> "$_env"
-        info "Added CYSIEM_OIDC_SECRET to .env"
-    fi
 
     # Add CYMIND_API_* if missing (central CyMind vault-managed credentials)
     if ! grep -q "^CYMIND_API_URL=" "$_env" 2>/dev/null; then
@@ -1357,7 +1350,6 @@ ENVEOF
     cat >> /opt/cyassure/.env << ENVEOF
 
 CYSOAR_OIDC_SECRET=${CYSOAR_OIDC_SECRET}
-CYSIEM_OIDC_SECRET=${CYSIEM_OIDC_SECRET}
 CY360SSO_OIDC_SECRET=${CY360SSO_OIDC_SECRET}
 
 # ── IAP oauth2-proxy ────────────────────────────────────────────────────────────
@@ -1570,8 +1562,6 @@ fi
     OAUTH2PROXY_SECRET=$(grep "^OAUTH2PROXY_SECRET=" /opt/cyassure/.env 2>/dev/null | cut -d= -f2- || true)
 [[ -z "${OAUTH2PROXY_COOKIE_SECRET:-}" ]] && \
     OAUTH2PROXY_COOKIE_SECRET=$(grep "^OAUTH2PROXY_COOKIE_SECRET=" /opt/cyassure/.env 2>/dev/null | cut -d= -f2- || true)
-[[ -z "${CYSIEM_OIDC_SECRET:-}" ]] && \
-    CYSIEM_OIDC_SECRET=$(grep "^CYSIEM_OIDC_SECRET=" /opt/cyassure/.env 2>/dev/null | cut -d= -f2- || true)
 
 # ── Sync OAUTH2PROXY_SECRET/COOKIE_SECRET into the app's own .env ────────────
 # Same landmine as BASE_DOMAIN above, found live 2026-08-24: these are
