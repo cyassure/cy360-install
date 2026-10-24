@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.46.0 -- 2026-10-23 16:35 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.47.0 -- 2026-10-24 18:34 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -282,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.46.0"
+_SCRIPT_VERSION="v0.47.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1833,6 +1833,9 @@ else
 #     -gated like the others here, just no browser session to complete
 #     oauth2-proxy's login redirect with) — cyedr-install.sh downloads it to
 #     brand the macOS agent's .app bundle for Full Disk Access prompts.
+#   - /api/dlp/override/<tenant>/<id>/<token>: the Email DLP sender override
+#     link in a hold notice — opened by the email's sender, who usually has
+#     no Cy360 account; the single-use token is the credential.
 #   - /api/ai-security/browser-ext/{package.crx,package/update.xml}: same
 #     failure mode, different caller — Chrome's own extension auto-updater,
 #     not curl. It cannot attach a session cookie either (Omaha-protocol
@@ -1975,6 +1978,19 @@ server {
     # fail to install/update the extension the same way the EDR curl
     # one-liners failed above.
     location ~ ^/api/ai-security/browser-ext/(package\.crx|package/update\.xml)$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # Email DLP sender override (blueprints/dlp/override_routes.py): the
+    # sender of a held email opens this from the hold notice — usually
+    # someone with no Cy360 account, so there is no session to give
+    # oauth2-proxy. The single-use token in the path is the credential.
+    # Exact pattern only; the rest of /api/dlp/ stays behind oauth2-proxy.
+    location ~ ^/api/dlp/override/[0-9a-f-]+/[0-9a-f-]+/[A-Za-z0-9_-]+$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
@@ -2772,6 +2788,15 @@ if [[ -n "$_ENV_FILE_FOR_UFW" ]] && grep -qE '^COMPOSE_PROFILES=.*aigateway' "$_
 else
     ufw delete allow 8443/tcp >/dev/null 2>&1 || true
     ufw delete allow 8444/tcp >/dev/null 2>&1 || true
+fi
+# Email DLP relay (2026-10-23) — mail-dlp-relay takes SMTP from the customer's
+# mail platform on 25/tcp. Opt-in "maildlp" profile; the relay itself also
+# refuses any peer outside Data Security → Email → Relay access.
+if [[ -n "$_ENV_FILE_FOR_UFW" ]] && grep -qE '^COMPOSE_PROFILES=.*maildlp' "$_ENV_FILE_FOR_UFW" 2>/dev/null; then
+    ufw allow 25/tcp comment "Email DLP relay (SMTP)" >/dev/null 2>&1 || true
+    info "UFW: 25 opened (maildlp profile active)"
+else
+    ufw delete allow 25/tcp >/dev/null 2>&1 || true
 fi
 
 # Remove any legacy rules that expose internal services directly
