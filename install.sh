@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.55.3 -- 2026-10-28 16:58 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.56.0 -- 2026-10-28 20:40 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -282,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.55.3"
+_SCRIPT_VERSION="v0.56.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1836,6 +1836,10 @@ else
 #   - /api/dlp/override/<tenant>/<id>/<token>: the Email DLP sender override
 #     link in a hold notice — opened by the email's sender, who usually has
 #     no Cy360 account; the single-use token is the credential.
+#   - /api/privacy/public/*: Privacy Operations' collection API — the
+#     customer's own website/app (consent, notices) and its users (rights
+#     requests, grievances) call it with no Cy360 session; the per-tenant
+#     X-Cy360-Privacy-Key header is the credential.
 #   - /api/ai-security/browser-ext/{package.crx,package/update.xml}: same
 #     failure mode, different caller — Chrome's own extension auto-updater,
 #     not curl. It cannot attach a session cookie either (Omaha-protocol
@@ -1991,6 +1995,19 @@ server {
     # oauth2-proxy. The single-use token in the path is the credential.
     # Exact pattern only; the rest of /api/dlp/ stays behind oauth2-proxy.
     location ~ ^/api/dlp/override/[0-9a-f-]+/[0-9a-f-]+/[A-Za-z0-9_-]+$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # Privacy Operations public API (privacy/routes.py in cy360-grc):
+    # called by the customer's own website/app and its users, never with a
+    # Cy360 session. The X-Cy360-Privacy-Key header is the credential;
+    # only /api/privacy/public/ is exempt, the rest stays behind oauth2-proxy.
+    location ^~ /api/privacy/public/ {
+        client_max_body_size 64k;
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
