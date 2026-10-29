@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.59.0 -- 2026-10-29 11:55 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.60.0 -- 2026-10-29 21:09 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -282,7 +282,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.59.0"
+_SCRIPT_VERSION="v0.60.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1840,6 +1840,11 @@ else
 #     customer's own website/app (consent, notices) and its users (rights
 #     requests, grievances) call it with no Cy360 session; the per-tenant
 #     X-Cy360-Privacy-Key header is the credential.
+#   - /api/dspm/scanner/*: the Data Security in-environment scanner, a
+#     container in the customer's network calling home with its
+#     X-Cy360-Scanner-Token (claim scan jobs and database lookups, post
+#     counts). No browser session exists there; without this bypass every
+#     private-database scan and lookup was redirected to the sign-in page.
 #   - /api/ai-security/browser-ext/{package.crx,package/update.xml}: same
 #     failure mode, different caller — Chrome's own extension auto-updater,
 #     not curl. It cannot attach a session cookie either (Omaha-protocol
@@ -2008,6 +2013,19 @@ server {
     # only /api/privacy/public/ is exempt, the rest stays behind oauth2-proxy.
     location ^~ /api/privacy/public/ {
         client_max_body_size 64k;
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # DSPM-SCANNER-BYPASS — Data Security's in-environment scanner (token
+    # authenticated in dspm/connection_routes.py's _scanner_auth, never a
+    # browser session). Only /api/dspm/scanner/ is exempt; the rest of
+    # /api/dspm/ stays behind oauth2-proxy.
+    location ^~ /api/dspm/scanner/ {
+        client_max_body_size 16m;
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
@@ -2364,6 +2382,48 @@ EDR_BYPASS_NGINX_PY
                 warn "nginx reload failed after CyEDR agent-bypass injection — check: nginx -t"
         else
             success "nginx: CyEDR agent-bypass location already configured"
+        fi
+
+        # ── Inject the DSPM scanner bypass if missing (idempotent, 2026-10-29) ──
+        # Vhosts provisioned before this never let the in-environment scanner
+        # through oauth2-proxy. Same marker + anchor pattern as above, mirrored
+        # in updater/server.py's _wire_iap_gateway_vhost().
+        if ! grep -q "DSPM-SCANNER-BYPASS" "$_iap_vhost_real" 2>/dev/null; then
+            python3 - "$_iap_vhost_real" << DSPM_BYPASS_NGINX_PY
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+block = (
+    "    # DSPM-SCANNER-BYPASS — Data Security's in-environment scanner\n"
+    "    # (X-Cy360-Scanner-Token, never a browser session).\n"
+    "    location ^~ /api/dspm/scanner/ {\n"
+    "        client_max_body_size 16m;\n"
+    "        proxy_pass         http://127.0.0.1:${APP_PORT};\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header   Host              \$host;\n"
+    "        proxy_set_header   X-Real-IP         \$remote_addr;\n"
+    "        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;\n"
+    "        proxy_set_header   X-Forwarded-Proto https;\n"
+    "    }\n"
+)
+
+anchor = "    location /api/ {"
+if anchor in text:
+    idx = text.find(anchor)
+    text = text[:idx] + block + text[idx:]
+    with open(path, "w") as f:
+        f.write(text)
+    print("nginx: DSPM-SCANNER-BYPASS location block injected")
+else:
+    print("nginx: 'location /api/ {' anchor not found — DSPM-SCANNER-BYPASS block NOT injected, check this vhost manually")
+DSPM_BYPASS_NGINX_PY
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && \
+                success "nginx: DSPM scanner bypass added and reloaded" || \
+                warn "nginx reload failed after DSPM scanner bypass injection — check: nginx -t"
+        else
+            success "nginx: DSPM scanner bypass already configured"
         fi
     fi
 fi
