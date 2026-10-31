@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.61.0 -- 2026-10-30 21:21 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.62.0 -- 2026-10-30 23:55 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -41,6 +41,9 @@
 #                        cyassure/cy360's Releases API instead of the public cy360-install
 #                        mirror (or set GH_TOKEN env var)
 #   --version vX.Y.Z    install a specific release instead of the latest
+#   --registration-id <uuid>
+#                       set by the cyassure.eu download page — links this install's
+#                        Fleet Monitor row to the download registration
 #
 # NON-INTERACTIVE PRE-SEEDS (set before the command to skip the matching
 # prompt — this is what the portal's Setup Wizard generates for you):
@@ -187,6 +190,8 @@ for ((_i=0; _i<${#_args[@]}; _i++)); do
         --token=*)          GH_TOKEN="${arg#*=}" ;;
         --version)          APP_VERSION="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --version=*)        APP_VERSION="${arg#*=}" ;;
+        --registration-id)  REGISTRATION_ID="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
+        --registration-id=*) REGISTRATION_ID="${arg#*=}" ;;
         --tls-mode)         TLS_MODE="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --tls-mode=*)       TLS_MODE="${arg#*=}" ;;
         --cert-path)        CYASSURE_SETUP_CERT_PATH="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
@@ -203,6 +208,12 @@ if [[ -n "$TLS_MODE" ]]; then
     esac
 fi
 
+
+# A malformed ID must never stop an install: it only labels a Fleet Monitor row.
+if [[ -n "${REGISTRATION_ID:-}" && ! "$REGISTRATION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+    echo "Ignoring invalid --registration-id" >&2
+    REGISTRATION_ID=""
+fi
 
 # ── License presence check (full install only — informational) ───────────────
 _LIC_FILE="/opt/cyassure/cyassure.lic"
@@ -282,7 +293,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.61.0"
+_SCRIPT_VERSION="v0.62.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -668,6 +679,17 @@ if [[ "$MODE" == "full" ]]; then
             echo "CYASSURE_APP_DB_PASSWORD=$(openssl rand -hex 24)" >> .env
             info "Added CYASSURE_APP_DB_PASSWORD to .env (separate secret from POSTGRES_PASSWORD)"
         fi
+        # Fleet Monitor labels. The backend can't get the host's name itself:
+        # inside its container, the hostname is just the container ID.
+        _set_env_value() {
+            if grep -q "^$1=" .env 2>/dev/null; then
+                sed -i "s|^$1=.*|$1=$2|" .env
+            else
+                echo "$1=$2" >> .env
+            fi
+        }
+        _set_env_value CYASSURE_HOSTNAME "$(hostname | tr -cd 'A-Za-z0-9._-')"
+        [[ -n "${REGISTRATION_ID:-}" ]] && _set_env_value CYASSURE_REGISTRATION_ID "$REGISTRATION_ID"
         chmod o+w .env
 
         info "Pulling images..."
