@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.63.0 -- 2026-11-01 00:48 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.64.0 -- 2026-11-01 12:25 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -44,6 +44,12 @@
 #   --registration-id <uuid>
 #                       set by the cyassure.eu download page — links this install's
 #                        Fleet Monitor row to the download registration
+#   --registry-token <cy360r_...>
+#                       this install's image pull key, from the cyassure.eu download
+#                        page (one key per server; or set CYASSURE_REGISTRY_TOKEN).
+#                        Stored root/backend-only in /opt/cyassure/.registry_token and
+#                        used for `docker login registry.cyassure.eu`. Enterprise
+#                        installs also receive one through their licence check-in.
 #
 # NON-INTERACTIVE PRE-SEEDS (set before the command to skip the matching
 # prompt — this is what the portal's Setup Wizard generates for you):
@@ -192,6 +198,8 @@ for ((_i=0; _i<${#_args[@]}; _i++)); do
         --version=*)        APP_VERSION="${arg#*=}" ;;
         --registration-id)  REGISTRATION_ID="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --registration-id=*) REGISTRATION_ID="${arg#*=}" ;;
+        --registry-token)   REGISTRY_TOKEN="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
+        --registry-token=*) REGISTRY_TOKEN="${arg#*=}" ;;
         --tls-mode)         TLS_MODE="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --tls-mode=*)       TLS_MODE="${arg#*=}" ;;
         --cert-path)        CYASSURE_SETUP_CERT_PATH="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
@@ -214,6 +222,56 @@ if [[ -n "${REGISTRATION_ID:-}" && ! "$REGISTRATION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9
     echo "Ignoring invalid --registration-id" >&2
     REGISTRATION_ID=""
 fi
+
+# ── Private image registry (2026-11-01) ──────────────────────────────────────
+# Release images come from registry.cyassure.eu, which needs this install's own
+# pull key (cy360r_...). Community: the cyassure.eu download page puts it in the
+# install command. Enterprise: the daily CyAdmin licence check-in delivers it.
+# Either way it lives in /opt/cyassure/.registry_token (mode 600, owned by the
+# backend's uid so a check-in can rotate it), and .env's CYASSURE_IMAGE_REGISTRY
+# tells docker-compose.yml which registry to pull from. The key is never echoed.
+REGISTRY_TOKEN="${REGISTRY_TOKEN:-${CYASSURE_REGISTRY_TOKEN:-}}"
+CY360_REGISTRY="registry.cyassure.eu"
+REGISTRY_TOKEN_FILE="/opt/cyassure/.registry_token"
+_REGISTRY_TOKEN_RE='^cy360r_[A-Za-z0-9_-]{20,120}$'
+if [[ -n "$REGISTRY_TOKEN" && ! "$REGISTRY_TOKEN" =~ $_REGISTRY_TOKEN_RE ]]; then
+    echo "Invalid --registry-token: copy the whole install command again from https://cyassure.eu/download" >&2
+    exit 1
+fi
+
+# Run from the app directory (the one holding .env).
+configure_image_registry() {
+    local token="$REGISTRY_TOKEN"
+    if [[ -z "$token" && -r "$REGISTRY_TOKEN_FILE" ]]; then
+        token="$(tr -d ' \r\n' < "$REGISTRY_TOKEN_FILE")"
+        [[ "$token" =~ $_REGISTRY_TOKEN_RE ]] || token=""
+    fi
+    if [[ -z "$token" ]]; then
+        warn "No registry key: pulling from the legacy registry (ghcr.io), which is closing."
+        warn "Get an install command with a key at https://cyassure.eu/download (Enterprise installs receive one at their licence check-in)."
+        return 0
+    fi
+    if [[ -n "$REGISTRY_TOKEN" ]]; then
+        mkdir -p /opt/cyassure
+        ( umask 077; printf '%s\n' "$token" > "${REGISTRY_TOKEN_FILE}.tmp" )
+        chown 999:999 "${REGISTRY_TOKEN_FILE}.tmp"
+        chmod 600 "${REGISTRY_TOKEN_FILE}.tmp"
+        mv -f "${REGISTRY_TOKEN_FILE}.tmp" "$REGISTRY_TOKEN_FILE"
+    fi
+    info "Logging in to ${CY360_REGISTRY}..."
+    if ! printf '%s' "$token" | docker login "$CY360_REGISTRY" -u cy360 --password-stdin >/dev/null 2>&1; then
+        error "${CY360_REGISTRY} refused this install's registry key."
+        error "Keys work on one server only and are cancelled if unused for 30 days, or when a new one is issued for the same install."
+        error "Generate a new install command at https://cyassure.eu/download, or ask CyAssure support for an Enterprise install."
+        exit 1
+    fi
+    if grep -q "^CYASSURE_IMAGE_REGISTRY=" .env 2>/dev/null; then
+        sed -i "s|^CYASSURE_IMAGE_REGISTRY=.*|CYASSURE_IMAGE_REGISTRY=${CY360_REGISTRY}|" .env
+    else
+        echo "CYASSURE_IMAGE_REGISTRY=${CY360_REGISTRY}" >> .env
+    fi
+    success "Images will be pulled from ${CY360_REGISTRY}"
+}
 
 # ── License presence check (full install only — informational) ───────────────
 _LIC_FILE="/opt/cyassure/cyassure.lic"
@@ -293,7 +351,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.63.0"
+_SCRIPT_VERSION="v0.64.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -597,9 +655,16 @@ if [[ "$MODE" == "full" ]]; then
     if [[ -n "$_APP_COMPOSE_DIR" ]]; then
         cd "$_APP_COMPOSE_DIR"
         success "Docker app already installed at $(pwd) — skipping bring-up, continuing with host prep"
+        # Re-running with --registry-token moves an existing install to the
+        # private registry; the next portal Update pulls from it.
+        if [[ -n "$REGISTRY_TOKEN" ]]; then
+            configure_image_registry
+            info "Run Settings → Update in the portal (or docker compose pull && docker compose up -d here) to pull from ${CY360_REGISTRY}."
+        fi
     else
-        # No GH_TOKEN needed here: ghcr.io/cyassure/cy360-* images are public
-        # (anonymous `docker pull` works), and the deploy bundle below
+        # No GH_TOKEN needed here: images come from registry.cyassure.eu with
+        # this install's registry key (configure_image_registry, above; the
+        # legacy public ghcr.io images until that closes), and the deploy bundle below
         # (docker-compose.yml/.env.example — no product source, ever, see
         # scripts/docker-release.sh's header) is mirrored publicly to
         # cyassure/cy360-install alongside this script itself. GH_TOKEN is only
@@ -692,6 +757,8 @@ if [[ "$MODE" == "full" ]]; then
         [[ -n "${REGISTRATION_ID:-}" ]] && _set_env_value CYASSURE_REGISTRATION_ID "$REGISTRATION_ID"
         chmod o+w .env
 
+        configure_image_registry
+
         info "Pulling images..."
         docker compose pull
 
@@ -712,7 +779,7 @@ if [[ "$MODE" == "full" ]]; then
             [[ -z "$_img" || "$_img" == *":<none>" ]] && continue
             [[ -n "$_PINNED_TAG" && "${_img##*:}" == "$_PINNED_TAG" ]] && continue
             docker rmi "$_img" >/dev/null 2>&1 && _PRUNED=$((_PRUNED + 1))
-        done < <(docker image ls --filter 'reference=ghcr.io/cyassure/cy360-*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+        done < <(docker image ls --filter 'reference=ghcr.io/cyassure/cy360-*' --filter "reference=${CY360_REGISTRY}/cyassure/cy360-*" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
         docker image prune -f >/dev/null 2>&1 || true
         [[ $_PRUNED -gt 0 ]] && info "Removed ${_PRUNED} superseded CyAssure image tag(s)"
 
