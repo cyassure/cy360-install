@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.66.1 -- 2026-11-02 00:33 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.67.1 -- 2026-11-02 11:51 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -351,7 +351,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.66.1"
+_SCRIPT_VERSION="v0.67.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1224,9 +1224,16 @@ if [[ "$MODE" == "full" ]]; then
     ADMIN_API_KEY=$(gen_secret)
     CYSOAR_OIDC_SECRET=$(gen_secret)
     CY360SSO_OIDC_SECRET=$(gen_secret)
-    # oauth2-proxy: client secret (used by CyAssure OIDC) + 32-byte cookie secret
-    OAUTH2PROXY_SECRET=$(gen_secret)
-    OAUTH2PROXY_COOKIE_SECRET=$(openssl rand -base64 32 | tr -d '\n' | head -c 32)
+    # oauth2-proxy: client secret (used by CyAssure OIDC) + 32-byte cookie secret.
+    # Kept on a re-run, like the session secrets above: a fresh pair here
+    # changed the app's OIDC client secret while the running cy-proxy kept
+    # the old one (it was only recreated on a domain change), breaking every
+    # IAP sign-in with invalid_client.
+    OAUTH2PROXY_SECRET=$(_get OAUTH2PROXY_SECRET)
+    [[ -z "$OAUTH2PROXY_SECRET" ]] && OAUTH2PROXY_SECRET=$(gen_secret)
+    OAUTH2PROXY_COOKIE_SECRET=$(_get OAUTH2PROXY_COOKIE_SECRET)
+    [[ -z "$OAUTH2PROXY_COOKIE_SECRET" ]] && \
+        OAUTH2PROXY_COOKIE_SECRET=$(openssl rand -base64 32 | tr -d '\n' | head -c 32)
     success "All secrets ready"
 
 else
@@ -1751,11 +1758,22 @@ else
         _running_domain=$(docker inspect cy-proxy 2>/dev/null \
             | python3 -c "import sys,json; e=json.load(sys.stdin)[0]['Config']['Env']; \
               print(next((x.split('=',1)[1] for x in e if x.startswith('OAUTH2_PROXY_COOKIE_DOMAINS=')),'')" 2>/dev/null || true)
-        if [[ "$_running_domain" == ".${BASE_DOMAIN}" ]]; then
-            info "cy-proxy already configured for .${BASE_DOMAIN} — no restart needed"
-        else
+        # The secrets must match too, not just the domain: the backend's
+        # OIDC client checks OAUTH2_PROXY_CLIENT_SECRET at /oidc/token, so a
+        # cy-proxy left running with an old secret fails every sign-in with
+        # invalid_client (found 2026-11-02). Compared by hash, never printed.
+        _running_secrets=$(docker inspect cy-proxy 2>/dev/null \
+            | python3 -c "import sys,json,hashlib; e=dict(x.split('=',1) for x in json.load(sys.stdin)[0]['Config']['Env'] if '=' in x); \
+              print(hashlib.sha256((e.get('OAUTH2_PROXY_CLIENT_SECRET','')+'|'+e.get('OAUTH2_PROXY_COOKIE_SECRET','')).encode()).hexdigest())" 2>/dev/null || true)
+        _wanted_secrets=$(printf '%s|%s' "$OAUTH2PROXY_SECRET" "$OAUTH2PROXY_COOKIE_SECRET" | sha256sum | cut -d' ' -f1)
+        if [[ "$_running_domain" != ".${BASE_DOMAIN}" ]]; then
             info "cy-proxy domain changed — recreating container"
             docker rm -f cy-proxy 2>/dev/null || true
+        elif [[ "$_running_secrets" != "$_wanted_secrets" ]]; then
+            info "cy-proxy secrets differ from .env — recreating container"
+            docker rm -f cy-proxy 2>/dev/null || true
+        else
+            info "cy-proxy already configured for .${BASE_DOMAIN} — no restart needed"
         fi
     fi
 
@@ -2060,6 +2078,22 @@ server {
     # HTML/redirect response instead of JSON with no obvious error.
     # CYEDR-AGENT-BYPASS
     location ~ ^/api/edr/(agents/self-enroll|agents/[^/]+/heartbeat|agents/[^/]+/self-test/detections|telemetry|logs|inventory|fim/events|fim/baseline|sca/results|tamper-events|response/[^/]+/pending|response/[^/]+/commands/[^/]+/complete|installer/agent-binary|installer/custom-yara)$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # CYEDR-AGENT-BYPASS-2 (2026-11-02) — the rest of the Go agent's calls,
+    # missed by the block above: AI agent config, DLP (assets, at-rest,
+    # content scan), IOC feed, remediation signing key, COLLECT_SAMPLE
+    # uploads, and the ITAM network probe + Shadow AI DNS/catalog endpoints.
+    # Every one authenticates the agent's enrollment token app-side
+    # (require_agent_token / itam's _verify_probe_token); without this block
+    # oauth2-proxy answered them with a 302 to the sign-in page, so Shadow AI
+    # DNS findings and network probe jobs never arrived on IAP installs.
+    location ~ ^/api/(edr/(ai-agents/config|dlp/assets/edm/[^/]+|dlp/assets/fingerprints|dlp/at-rest|dlp/content-scan|ioc-feed|remediation/signing-key|response/[^/]+/commands/[^/]+/sample)|itam/(probe/jobs|probe/jobs/[^/]+/result|probe/auto-result|probe/mdns-result|probe/creds|shadow-ai/catalog|shadow-ai/dns-ingest))$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
@@ -2471,6 +2505,46 @@ EDR_BYPASS_NGINX_PY
                 warn "nginx reload failed after CyEDR agent-bypass injection — check: nginx -t"
         else
             success "nginx: CyEDR agent-bypass location already configured"
+        fi
+
+        # ── Inject the second CyEDR agent bypass if missing (idempotent, 2026-11-02) ──
+        # Own marker: CYEDR-AGENT-BYPASS above is only injected when absent, so
+        # widening its regex would never reach a vhost that already has it.
+        if ! grep -q "CYEDR-AGENT-BYPASS-2" "$_iap_vhost_real" 2>/dev/null; then
+            python3 - "$_iap_vhost_real" << CYEDR_BYPASS2_NGINX_PY
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+block = (
+    "    # CYEDR-AGENT-BYPASS-2 — the rest of the CyEDR agent's endpoints\n"
+    "    # (enrollment token checked app-side, never a browser session).\n"
+    "    location ~ ^/api/(edr/(ai-agents/config|dlp/assets/edm/[^/]+|dlp/assets/fingerprints|dlp/at-rest|dlp/content-scan|ioc-feed|remediation/signing-key|response/[^/]+/commands/[^/]+/sample)|itam/(probe/jobs|probe/jobs/[^/]+/result|probe/auto-result|probe/mdns-result|probe/creds|shadow-ai/catalog|shadow-ai/dns-ingest))\$ {\n"
+    "        proxy_pass         http://127.0.0.1:${APP_PORT};\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header   Host              \$host;\n"
+    "        proxy_set_header   X-Real-IP         \$remote_addr;\n"
+    "        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;\n"
+    "        proxy_set_header   X-Forwarded-Proto https;\n"
+    "    }\n"
+)
+
+anchor = "    location /api/ {"
+if anchor in text:
+    idx = text.find(anchor)
+    text = text[:idx] + block + text[idx:]
+    with open(path, "w") as f:
+        f.write(text)
+    print("nginx: CYEDR-AGENT-BYPASS-2 location block injected")
+else:
+    print("nginx: 'location /api/ {' anchor not found — CYEDR-AGENT-BYPASS-2 block NOT injected, check this vhost manually")
+CYEDR_BYPASS2_NGINX_PY
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && \
+                success "nginx: second CyEDR agent bypass added and reloaded" || \
+                warn "nginx reload failed after CyEDR agent bypass injection — check: nginx -t"
+        else
+            success "nginx: second CyEDR agent bypass already configured"
         fi
 
         # ── Inject the DSPM scanner bypass if missing (idempotent, 2026-10-29) ──
