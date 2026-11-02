@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.67.1 -- 2026-11-02 11:51 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.68.1 -- 2026-11-02 15:44 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -239,18 +239,32 @@ if [[ -n "$REGISTRY_TOKEN" && ! "$REGISTRY_TOKEN" =~ $_REGISTRY_TOKEN_RE ]]; the
     exit 1
 fi
 
-# Run from the app directory (the one holding .env).
-configure_image_registry() {
+# The key from --registry-token, else the one already saved on this server.
+_registry_token_value() {
     local token="$REGISTRY_TOKEN"
     if [[ -z "$token" && -r "$REGISTRY_TOKEN_FILE" ]]; then
         token="$(tr -d ' \r\n' < "$REGISTRY_TOKEN_FILE")"
         [[ "$token" =~ $_REGISTRY_TOKEN_RE ]] || token=""
     fi
-    if [[ -z "$token" ]]; then
-        warn "No registry key: pulling from the legacy registry (ghcr.io), which is closing."
-        warn "Get an install command with a key at https://cyassure.eu/download (Enterprise installs receive one at their licence check-in)."
-        return 0
-    fi
+    printf '%s' "$token"
+}
+
+# Images are only published to registry.cyassure.eu (the public ghcr.io
+# packages closed 2026-11-02), so an install without a key cannot pull them.
+# Called before anything is downloaded, so a missing key fails in seconds.
+require_registry_token() {
+    [[ -n "$(_registry_token_value)" ]] && return 0
+    error "This server has no registry key, so it cannot download CyAssure 360 images."
+    error "Get an install command with a key at https://cyassure.eu/download and run that command."
+    error "Enterprise: install with that command too; your licence check-in then replaces the key with your Enterprise one."
+    exit 1
+}
+
+# Run from the app directory (the one holding .env).
+configure_image_registry() {
+    local token
+    token="$(_registry_token_value)"
+    [[ -n "$token" ]] || require_registry_token
     if [[ -n "$REGISTRY_TOKEN" ]]; then
         mkdir -p /opt/cyassure
         ( umask 077; printf '%s\n' "$token" > "${REGISTRY_TOKEN_FILE}.tmp" )
@@ -351,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.67.1"
+_SCRIPT_VERSION="v0.68.1"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -662,9 +676,10 @@ if [[ "$MODE" == "full" ]]; then
             info "Run Settings → Update in the portal (or docker compose pull && docker compose up -d here) to pull from ${CY360_REGISTRY}."
         fi
     else
+        require_registry_token
         # No GH_TOKEN needed here: images come from registry.cyassure.eu with
-        # this install's registry key (configure_image_registry, above; the
-        # legacy public ghcr.io images until that closes), and the deploy bundle below
+        # this install's registry key (configure_image_registry, above), and
+        # the deploy bundle below
         # (docker-compose.yml/.env.example — no product source, ever, see
         # scripts/docker-release.sh's header) is mirrored publicly to
         # cyassure/cy360-install alongside this script itself. GH_TOKEN is only
@@ -720,7 +735,7 @@ if [[ "$MODE" == "full" ]]; then
             # Pin the exact resolved release, not .env.example's own literal
             # "latest" default. Without this, `docker compose pull` below
             # falls through to CYASSURE_VERSION's ${:-latest} default and
-            # floats on ghcr.io's :latest image tag instead of the numbered
+            # floats on the registry's :latest image tag instead of the numbered
             # tag this script just reported installing — and that :latest
             # tag isn't guaranteed to match the highest version number (a
             # 2026-09-20 incident found it briefly pointing at an older
