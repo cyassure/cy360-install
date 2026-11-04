@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.69.0 -- 2026-11-02 19:46 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.70.2 -- 2026-11-03 23:44 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.69.0"
+_SCRIPT_VERSION="v0.70.2"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1721,6 +1721,20 @@ fi
 [[ -z "${APP_PORT:-}" ]] && \
     APP_PORT=$(grep "^APP_PORT=" ./.env 2>/dev/null | cut -d= -f2- || true)
 APP_PORT="${APP_PORT:-8080}"
+
+# SECURITY (VAPT H-1, 2026-11-04): with the IAP gateway in front, the Docker
+# frontend's published port must NOT be reachable at the origin IP — otherwise
+# http://<origin-ip>:${APP_PORT}/ reaches the app directly, bypassing
+# oauth2-proxy entirely (confirmed live: Docker's DNAT sidesteps UFW, so the
+# port is internet-reachable even though UFW never allows it). Pin the publish
+# to loopback; the host nginx still reaches it via 127.0.0.1:${APP_PORT}. Bare
+# non-IAP eval installs never run this IAP step, so they keep the 0.0.0.0
+# default from docker-compose.yml and stay reachable on the LAN.
+if [[ -f "./.env" ]]; then
+    sed -i '/^APP_BIND_ADDR=/d' ./.env 2>/dev/null || true
+    echo "APP_BIND_ADDR=127.0.0.1" >> ./.env
+    info "Frontend publish pinned to 127.0.0.1 (IAP active) — origin-IP access to :${APP_PORT} is blocked"
+fi
 
 # ── Informational DNS check (advisory only — never blocks startup) ───────────
 # Not needed anymore for cy-proxy to START (see --skip-oidc-discovery below),
