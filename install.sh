@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.77.3 -- 2026-11-06 22:37 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.78.0 -- 2026-11-07 10:02 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.77.3"
+_SCRIPT_VERSION="v0.78.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1388,12 +1388,6 @@ PATCHEOF
         info "Added ASM scanner tuning vars to .env"
     fi
 
-    # Add MAXMIND_KEY if missing (hardcoded default shipped with setup.sh)
-    if ! grep -q "^MAXMIND_KEY=" "$_env" 2>/dev/null; then
-        echo "MAXMIND_KEY=${MAXMIND_KEY:-}" >> "$_env"
-        info "Added MAXMIND_KEY to .env"
-    fi
-
     # Remove stale CYMIND_API_KEY / CYMIND_API_URL from cysiemstack.env.
     # v1.2.45+ moves these shared keys to .env which the engine service now loads
     # FIRST via EnvironmentFile=/opt/cyassure/.env. If the old cymk_ admin key is
@@ -1521,7 +1515,6 @@ SECRETS_BACKEND=${SECRETS_BACKEND:-azure}
 #   2. `az login` CLI session  ← local dev
 AZURE_KEYVAULT_URL=${AZURE_KEYVAULT_URL:-}
 ENVEOF
-    echo "MAXMIND_KEY=${MAXMIND_KEY:-}" >> /opt/cyassure/.env
 
     # ── ASM Scanner tuning (optional — defaults are safe for most deployments) ──
     cat >> /opt/cyassure/.env << ASMEOF
@@ -2764,52 +2757,12 @@ step_header "PORTAL / CONFIG STAGING (legacy paths still read by later steps)"
 # containers (backend/requirements.txt pins it; normaliser.py:22 is the only
 # reader). The host having or not having geoip2 was never relevant.
 
-# ── GeoLite2-City.mmdb download (always refreshed — MaxMind updates monthly) ──
-GEOIP_DIR="/opt/cyassure/geoip"
-mkdir -p "$GEOIP_DIR"
-GEOLITE_DB="$GEOIP_DIR/GeoLite2-City.mmdb"
-_MMKEY="$(grep "^MAXMIND_KEY=" /opt/cyassure/.env 2>/dev/null | cut -d= -f2)"
-if [[ -n "$_MMKEY" ]]; then
-    info "Downloading/refreshing GeoLite2-City.mmdb..."
-    GEOURL="https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${_MMKEY}&suffix=tar.gz"
-    TMP_GEO=$(mktemp /tmp/geolite2_XXXXXX.tar.gz)
-    curl -sL "$GEOURL" -o "$TMP_GEO" \
-        && tar -xzf "$TMP_GEO" -C "$GEOIP_DIR" --strip-components=1 --wildcards "*.mmdb" 2>/dev/null || true
-    find "$GEOIP_DIR" -name "*.mmdb" ! -name "GeoLite2-City.mmdb" -exec mv {} "$GEOLITE_DB" \; 2>/dev/null || true
-    rm -f "$TMP_GEO"
-    if [[ -f "$GEOLITE_DB" ]]; then
-        success "GeoLite2-City.mmdb downloaded/refreshed"
-        # Install monthly cron to keep the DB current (MaxMind releases a new DB every month)
-        cat > /etc/cron.monthly/cyassure-geoip-refresh << 'GEOCRON'
-#!/bin/bash
-# Refresh GeoLite2-City.mmdb — MaxMind releases an updated DB monthly.
-MMKEY="$(grep "^MAXMIND_KEY=" /opt/cyassure/.env 2>/dev/null | cut -d= -f2)"
-[[ -z "$MMKEY" ]] && exit 0
-GEOIP_DIR="/opt/cyassure/geoip"
-GEOLITE_DB="$GEOIP_DIR/GeoLite2-City.mmdb"
-TMP=$(mktemp /tmp/geolite2_XXXXXX.tar.gz)
-curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MMKEY}&suffix=tar.gz" -o "$TMP" \
-    && tar -xzf "$TMP" -C "$GEOIP_DIR" --strip-components=1 --wildcards "*.mmdb" 2>/dev/null || true
-find "$GEOIP_DIR" -name "*.mmdb" ! -name "GeoLite2-City.mmdb" -exec mv {} "$GEOLITE_DB" \; 2>/dev/null || true
-rm -f "$TMP"
-# KNOWN GAP (flagged 2026-07-27, not fixed): this used to `systemctl restart
-# cyassure-siem` so the correlation engine would reload the refreshed DB from
-# disk (normaliser.py opens it once at import time and caches the reader).
-# That systemd service no longer exists — this cron currently refreshes the
-# .mmdb file on disk but nothing restarts the cysiemstack-engine container to
-# pick it up. A real fix needs either a docker socket + `docker compose
-# restart cysiemstack-engine` (requires knowing the compose project's
-# location, which this script does not track) or an in-app reload signal —
-# not invented here.
-GEOCRON
-        chmod +x /etc/cron.monthly/cyassure-geoip-refresh
-        success "Monthly GeoIP refresh cron installed → /etc/cron.monthly/cyassure-geoip-refresh"
-    else
-        warn "GeoLite2 download failed — GeoIP enrichment disabled until next refresh"
-    fi
-else
-    warn "MAXMIND_KEY not set — GeoLite2 DB skipped (GeoIP enrichment disabled)"
-fi
+# GeoIP database: the backend's geoip_refresh job downloads and refreshes it
+# (DB-IP City Lite, no key; the customer's own MAXMIND_KEY if set). No key ships
+# here, and the shared key this script used to carry has been retired.
+mkdir -p /opt/cyassure/geoip
+# An earlier install's monthly cron used that key and can only fail now.
+rm -f /etc/cron.monthly/cyassure-geoip-refresh
 
 # ── CyEDR: stage Sysmon config for platform download endpoint ────────────
 # cyassure_sysmon_config.xml is served by the Flask backend at:
@@ -2823,7 +2776,7 @@ if [[ -f "$BUNDLE_DIR/agent/assets/sysmon/cyassure_sysmon_config.xml" ]]; then
 fi
 
 info "Post-install manual steps:"
-info "  1. GeoIP DB is refreshed automatically every month (MAXMIND_KEY is pre-configured)"
+info "  1. GeoIP DB is downloaded and refreshed automatically (no key needed)"
 info "  2. Deploy CyEDR on endpoints:"
 info "       Linux/macOS: curl -fsSL https://<platform>/cyedr-install.sh | sudo bash -s -- --token <TOKEN> --platform <URL>"
 info "       Windows:     .\\cyedr-install.ps1 -Token <TOKEN> -Platform <URL>"
