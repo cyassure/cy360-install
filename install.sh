@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.77.1 -- 2026-11-06 16:09 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.77.3 -- 2026-11-06 22:37 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.77.1"
+_SCRIPT_VERSION="v0.77.3"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -2953,11 +2953,13 @@ if [[ -n "$_RELEASE_JSON" ]]; then
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/octet-stream" \
             "$_asset_url" \
-            -o "${_edr_dest}/${_macwin_asset}"; then
+            -o "${_edr_dest}/.${_macwin_asset}.part"; then
+            mv -f "${_edr_dest}/.${_macwin_asset}.part" "${_edr_dest}/${_macwin_asset}"
             chmod 755 "${_edr_dest}/${_macwin_asset}"
             chown www-data:www-data "${_edr_dest}/${_macwin_asset}" 2>/dev/null || true
             _macwin_seeded=$((_macwin_seeded+1))
         else
+            rm -f "${_edr_dest}/.${_macwin_asset}.part"
             warn "Failed to download ${_macwin_asset} from release ${CYASSURE_VERSION}"
         fi
     done
@@ -2982,12 +2984,15 @@ elif [[ -n "${_HA_BASE:-}" ]]; then
         cyedr-agent-macos-arm64 cyedr-agent-macos-intel64 \
         cyedr-tray-macos-arm64  cyedr-tray-macos-intel64 \
         cyedr-agent-windows-x64.exe cyedr-tray-windows-x64.exe; do
-        if curl -fsSL "${_HA_BASE}/agent-packages/edr/${_macwin_asset}" -o "${_edr_dest}/${_macwin_asset}" 2>/dev/null; then
+        # Into a temp name: a miss on the mirror must not delete the copy the
+        # backend already synced from its image.
+        if curl -fsSL "${_HA_BASE}/agent-packages/edr/${_macwin_asset}" -o "${_edr_dest}/.${_macwin_asset}.part" 2>/dev/null; then
+            mv -f "${_edr_dest}/.${_macwin_asset}.part" "${_edr_dest}/${_macwin_asset}"
             chmod 755 "${_edr_dest}/${_macwin_asset}"
             chown www-data:www-data "${_edr_dest}/${_macwin_asset}" 2>/dev/null || true
             _macwin_seeded=$((_macwin_seeded+1))
         else
-            rm -f "${_edr_dest}/${_macwin_asset}"
+            rm -f "${_edr_dest}/.${_macwin_asset}.part"
             _macwin_missing=$((_macwin_missing+1))
         fi
     done
