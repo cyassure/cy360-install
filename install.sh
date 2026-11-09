@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.81.3 -- 2026-11-08 21:33 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.81.4 -- 2026-11-08 22:46 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.81.3"
+_SCRIPT_VERSION="v0.81.4"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1950,7 +1950,7 @@ else
 #     structural problem as /oidc/ — a non-browser client can't complete
 #     oauth2-proxy's browser-redirect login flow.
 #   - /api/edr/installer/{unix,win,uninstall-unix,uninstall-win,agent-bundle,
-#     tray-bundle,sysmon-config,sysmon-exe,yara-rules,yara-exe,
+#     tray-bundle,sysmon-config,sysmon-exe,yara-rules,yara-exe,nssm,
 #     agent-icon-macos}:
 #     the CyEDR install/uninstall one-liners admins curl|bash on a target
 #     host — no browser session exists there either. Listed by exact path
@@ -2058,7 +2058,7 @@ server {
     # path rather than bypassing the whole /api/edr/installer/ prefix so
     # the admin/session-protected siblings under that same prefix (token,
     # commands, uninstall-commands) stay behind oauth2-proxy.
-    location ~ ^/api/edr/installer/(unix|win|uninstall-unix|uninstall-win|agent-bundle|tray-bundle|sysmon-config|sysmon-exe|yara-rules|yara-exe|agent-icon-macos)$ {
+    location ~ ^/api/edr/installer/(unix|win|uninstall-unix|uninstall-win|agent-bundle|tray-bundle|sysmon-config|sysmon-exe|yara-rules|yara-exe|nssm|agent-icon-macos)$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
