@@ -1,4 +1,4 @@
-# CyAssure 360 — deployment bundle (v0.80.0)
+# CyAssure 360 — deployment bundle (v0.88.1)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
@@ -48,7 +48,7 @@ services:
 
   backend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.80.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.88.1}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — roadmap item #34 Phase 2: corruser is a
@@ -124,6 +124,9 @@ services:
       # every container start, so a plain `docker compose pull && up -d`
       # picks up fixes to any of them automatically — no manual staging.
       - /var/lib/cyassure-agent-packages:/var/lib/cyassure-agent-packages
+      # CyDataLake Parquet archive — written, pruned and served by the
+      # backend's retention job (Settings → Data Retention).
+      - cy360_cydatalake_archive:/var/lib/cyassure/cydatalake-archive
       # Settings > Environment Config "Global (.env)" tab and the Setup
       # Wizard read/write THIS project's real .env. Single-FILE mount only
       # (not the whole project dir) — this container is internet-facing and
@@ -148,7 +151,7 @@ services:
 
   cysiemstack-engine:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.80.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.88.1}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -176,7 +179,7 @@ services:
 
   frontend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.80.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.88.1}
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:80"
@@ -263,7 +266,7 @@ services:
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.80.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.88.1}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
@@ -282,8 +285,6 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-    volumes:
-      - cy360_cydatalake_archive:/var/lib/cyassure/cydatalake-archive
     # Inherited backend-image HEALTHCHECK (curl :5252/health) doesn't apply —
     # this container runs the ingest worker, not gunicorn, so nothing listens
     # on 5252. Confirmed live: without this it flips permanently unhealthy.
@@ -303,7 +304,7 @@ services:
   # UI screens generate as a fallback either way.
   updater:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.80.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.88.1}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
