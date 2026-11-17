@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.102.0 -- 2026-11-17 14:13 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.103.0 -- 2026-11-17 15:12 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.102.0"
+_SCRIPT_VERSION="v0.103.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1965,6 +1965,10 @@ else
 #   - /api/dlp/override/<tenant>/<id>/<token>: the Email DLP sender override
 #     link in a hold notice — opened by the email's sender, who usually has
 #     no Cy360 account; the single-use token is the credential.
+#   - /api/saas-exposure/exception/<tenant>/<id>/<token>: the sharing-policy
+#     exception request link in an owner notice (cy360-exposure-mgmt
+#     saas_exposure/routes.py) — opened by the file's owner, who may have no
+#     Cy360 account; the single-use token is the credential.
 #   - /api/privacy/public/*: Privacy Operations' collection API — the
 #     customer's own website/app (consent, notices) and its users (rights
 #     requests, grievances) call it with no Cy360 session; the per-tenant
@@ -2145,6 +2149,19 @@ server {
     # oauth2-proxy. The single-use token in the path is the credential.
     # Exact pattern only; the rest of /api/dlp/ stays behind oauth2-proxy.
     location ~ ^/api/dlp/override/[0-9a-f-]+/[0-9a-f-]+/[A-Za-z0-9_-]+$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # Sharing-policy exception request (cy360-exposure-mgmt
+    # saas_exposure/routes.py): the file owner opens it from the policy
+    # notice, usually with no Cy360 session. The single-use token in the
+    # path is the credential; the rest of /api/saas-exposure/ stays behind
+    # oauth2-proxy.
+    location ~ ^/api/saas-exposure/exception/[0-9a-f-]+/[0-9]+/[A-Za-z0-9_-]+$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
