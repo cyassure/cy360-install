@@ -1,4 +1,4 @@
-# CyAssure 360 — deployment bundle (v0.91.0)
+# CyAssure 360 — deployment bundle (v0.102.0)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
@@ -64,7 +64,7 @@ services:
 
   backend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — roadmap item #34 Phase 2: corruser is a
@@ -168,9 +168,53 @@ services:
       start_period: 20s
       retries: 3
 
+  # CyEDR agent endpoints on their own gunicorn (2026-11-17) — see
+  # ../docker-compose.yml's agent-api service for why. frontend's nginx falls
+  # back to backend if this service isn't running.
+  agent-api:
+    logging: *default-logging
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
+    command: ["gunicorn", "--bind", "0.0.0.0:5252", "app:app"]
+    restart: unless-stopped
+    environment:
+      CYASSURE_DB_URL: postgresql://cyassure_app:${CYASSURE_APP_DB_PASSWORD:?set CYASSURE_APP_DB_PASSWORD in .env}@db:5432/correlation
+      CYASSURE_APP_DB_PASSWORD: ${CYASSURE_APP_DB_PASSWORD:?set CYASSURE_APP_DB_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_URL: redis://redis:6379/0
+      SIEM_ENGINE_URL: http://cysiemstack-engine:8100
+      CYDATALAKE_BROKER_URL: redpanda:9092
+      CYDATALAKE_DB_HOST: clickhouse
+      CYDATALAKE_DB_PORT: "8123"
+      CYDATALAKE_DB_NAME: cydatalake
+      CYDATALAKE_DB_USER: default
+      CYDATALAKE_DB_PASSWORD: ${CYDATALAKE_DB_PASSWORD:-}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      APP_PORT: ${APP_PORT:-8080}
+      CY360_INTERNAL_API_URL: http://backend:5252
+      SCHEDULER_ENABLED: "false"
+      CY360_SKIP_MIGRATE: "1"
+      GUNICORN_CMD_ARGS: ${AGENT_API_GUNICORN_ARGS:---workers 6 --timeout 60 --max-requests 2000 --max-requests-jitter 400}
+    env_file:
+      - path: ./.env
+        required: false
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - /opt/cyassure:/opt/cyassure
+      - /var/log/cyassure:/var/log/cyassure
+      - /var/lib/cyassure-agent-packages:/var/lib/cyassure-agent-packages:ro
+      - ./.env:/project/.env:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5252/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
   cysiemstack-engine:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.102.0}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -196,9 +240,38 @@ services:
       start_period: 20s
       retries: 3
 
+  # engine-ingest (2026-11-17): extra correlation ingest processes. The engine
+  # is one Python process and was CPU-bound (100% of one core) at 100
+  # simulated agents on an 8-vCPU host; these run only the ingest loop
+  # (backend/engine_ingest.py) on the same queue. Per-entity advisory locks
+  # keep grouping safe across processes. ENGINE_INGEST_WORKERS in .env, 0 = off.
+  engine-ingest:
+    logging: *default-logging
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.102.0}
+    command: ["python", "-m", "engine_ingest"]
+    restart: unless-stopped
+    deploy:
+      replicas: ${ENGINE_INGEST_WORKERS:-2}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cyassure_app:${CYASSURE_APP_DB_PASSWORD:?set CYASSURE_APP_DB_PASSWORD in .env}@db:5432/correlation
+      CYASSURE_APP_DB_PASSWORD: ${CYASSURE_APP_DB_PASSWORD:?set CYASSURE_APP_DB_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_URL: redis://redis:6379/0
+      CY360_SKIP_MIGRATE: "1"
+    env_file:
+      - path: ./.env
+        required: false
+    depends_on:
+      cysiemstack-engine:
+        condition: service_healthy
+    volumes:
+      - /opt/cyassure:/opt/cyassure
+    healthcheck:
+      disable: true
+
   frontend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.102.0}
     restart: unless-stopped
     ports:
       # SECURITY (VAPT H-1): cyassure-setup.sh writes APP_BIND_ADDR=127.0.0.1
@@ -289,7 +362,7 @@ services:
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
@@ -320,7 +393,7 @@ services:
   # if you don't use the gateway. Missing from this bundle until 2026-11-13.
   gateway-mitm-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_mitm_relay"]
     restart: unless-stopped
@@ -344,7 +417,7 @@ services:
 
   gateway-sni-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_sni_relay"]
     restart: unless-stopped
@@ -376,7 +449,7 @@ services:
   # "maildlp" to COMPOSE_PROFILES. Missing from this bundle until 2026-11-13.
   mail-dlp-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.102.0}
     profiles: ["maildlp"]
     command: ["python", "-m", "dlp_mail.run_relay"]
     restart: unless-stopped
@@ -415,7 +488,7 @@ services:
   # UI screens generate as a fallback either way.
   updater:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.91.0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.102.0}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
