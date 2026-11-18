@@ -22,11 +22,12 @@
     "v0.94.0",
     "v0.93.0"
   ],
-  "updated_at": "2026-11-18T19:34:44Z",
+  "updated_at": "2026-11-18T23:56:14Z",
   "dev_versions": [
+    "v0.106.1-dev.28.ge9c4a61",
     "v0.106.1-dev.6.ga0abfb3",
     "v0.106.1-dev.4.g9d500d6"
   ],
-  "dev": "v0.106.1-dev.6.ga0abfb3",
-  "dev_commit": "a0abfb3a988d69ff64a4b00ed11c13299c689971"
+  "dev": "v0.106.1-dev.28.ge9c4a61",
+  "dev_commit": "e9c4a61eed130210d8ee6ad0a516346ad0732e0a"
 }
