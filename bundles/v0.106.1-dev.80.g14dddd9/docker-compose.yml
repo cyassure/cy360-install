@@ -1,4 +1,4 @@
-# CyAssure 360 — deployment bundle (v0.106.1-dev.4.g9d500d6)
+# CyAssure 360 — deployment bundle (v0.106.1-dev.80.g14dddd9)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
@@ -82,9 +82,14 @@ services:
 
   backend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
+    # Workers recycled every ~1,000 requests, except the scheduler's
+    # (core/gunicorn_conf.py). Tune with BACKEND_GUNICORN_ARGS in .env.
+    command: ["gunicorn", "-c", "python:core.gunicorn_conf", "--bind", "0.0.0.0:5252", "app:app"]
     restart: unless-stopped
     environment:
+      GUNICORN_CMD_ARGS: ${BACKEND_GUNICORN_ARGS:---workers 4 --timeout 120 --max-requests 1000 --max-requests-jitter 200}
+      MALLOC_ARENA_MAX: "2"
       # cyassure_app, not corruser — roadmap item #34 Phase 2: corruser is a
       # Postgres superuser by default, which bypasses RLS. docker-entrypoint.sh
       # creates the non-superuser cyassure_app role on every start.
@@ -191,7 +196,7 @@ services:
   # back to backend if this service isn't running.
   agent-api:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     command: ["gunicorn", "--bind", "0.0.0.0:5252", "app:app"]
     restart: unless-stopped
     environment:
@@ -211,6 +216,7 @@ services:
       CY360_INTERNAL_API_URL: http://backend:5252
       SCHEDULER_ENABLED: "false"
       CY360_SKIP_MIGRATE: "1"
+      MALLOC_ARENA_MAX: "2"
       GUNICORN_CMD_ARGS: ${AGENT_API_GUNICORN_ARGS:---workers 6 --timeout 60 --max-requests 2000 --max-requests-jitter 400}
     env_file:
       - path: ./.env
@@ -232,7 +238,7 @@ services:
 
   cysiemstack-engine:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -241,6 +247,7 @@ services:
       CYASSURE_APP_DB_PASSWORD: ${CYASSURE_APP_DB_PASSWORD:?set CYASSURE_APP_DB_PASSWORD in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       REDIS_URL: redis://redis:6379/0
+      MALLOC_ARENA_MAX: "2"
     env_file:
       - path: ./.env
         required: false
@@ -265,7 +272,7 @@ services:
   # keep grouping safe across processes. ENGINE_INGEST_WORKERS in .env, 0 = off.
   engine-ingest:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     command: ["python", "-m", "engine_ingest"]
     restart: unless-stopped
     deploy:
@@ -276,6 +283,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       REDIS_URL: redis://redis:6379/0
       CY360_SKIP_MIGRATE: "1"
+      MALLOC_ARENA_MAX: "2"
       # Lean pools: several ingest workers share Postgres' connection
       # budget (max 20 real connections each vs the engine's 45).
       DB_POOL_SIZE: ${ENGINE_INGEST_DB_POOL_SIZE:-5}
@@ -295,7 +303,7 @@ services:
 
   frontend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     restart: unless-stopped
     ports:
       # SECURITY (VAPT H-1): cyassure-setup.sh writes APP_BIND_ADDR=127.0.0.1
@@ -327,6 +335,10 @@ services:
       - redpanda
       - start
       - --mode dev-container
+      # dev-container does not cap memory: Seastar takes what it finds free.
+      - --smp ${REDPANDA_SMP:-1}
+      - --memory ${REDPANDA_MEMORY:-1G}
+      - --reserve-memory 0M
       - --kafka-addr internal://0.0.0.0:9092
       - --advertise-kafka-addr internal://redpanda:9092
       - --rpc-addr redpanda:33145
@@ -345,6 +357,12 @@ services:
   clickhouse:
     logging: *default-logging
     image: clickhouse/clickhouse-server:26.7.1
+    # Memory ceiling (default is 90% of host RAM) and a small mark cache.
+    command:
+      - "--"
+      - "--max_server_memory_usage=${CYDATALAKE_MAX_MEMORY_BYTES:-2147483648}"
+      - "--mark_cache_size=${CYDATALAKE_MARK_CACHE_BYTES:-268435456}"
+      - "--uncompressed_cache_size=0"
     restart: unless-stopped
     environment:
       # These three keys are the upstream clickhouse-server image's OWN
@@ -386,10 +404,11 @@ services:
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
+      MALLOC_ARENA_MAX: "2"
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
       CYDATALAKE_BROKER_URL: redpanda:9092
       CYDATALAKE_DB_HOST: clickhouse
@@ -417,7 +436,7 @@ services:
   # if you don't use the gateway. Missing from this bundle until 2026-11-13.
   gateway-mitm-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_mitm_relay"]
     restart: unless-stopped
@@ -441,7 +460,7 @@ services:
 
   gateway-sni-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_sni_relay"]
     restart: unless-stopped
@@ -473,7 +492,7 @@ services:
   # "maildlp" to COMPOSE_PROFILES. Missing from this bundle until 2026-11-13.
   mail-dlp-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     profiles: ["maildlp"]
     command: ["python", "-m", "dlp_mail.run_relay"]
     restart: unless-stopped
@@ -512,7 +531,7 @@ services:
   # UI screens generate as a fallback either way.
   updater:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.106.1-dev.4.g9d500d6}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.106.1-dev.80.g14dddd9}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
