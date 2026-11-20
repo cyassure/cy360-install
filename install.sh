@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.106.0 -- 2026-11-18 15:10 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.107.0 -- 2026-11-20 21:52 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -365,7 +365,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.106.0"
+_SCRIPT_VERSION="v0.107.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -1965,6 +1965,12 @@ else
 #   - /api/dlp/override/<tenant>/<id>/<token>: the Email DLP sender override
 #     link in a hold notice — opened by the email's sender, who usually has
 #     no Cy360 account; the single-use token is the credential.
+#   - /api/approvals/(request|act)/<tenant>/<id>/<token>: approval requests
+#     for a held / blocked action (blueprints/approvals) — the requester's
+#     reason page and their supervisor's decision page, neither of whom
+#     needs a Cy360 account; the token is the credential. /api/approvals/
+#     start/<signed ticket>: the "Request access" link from the browser
+#     extension / AI gateway block pages (asks for a work email first).
 #   - /api/saas-exposure/exception/<tenant>/<id>/<token>: the sharing-policy
 #     exception request link in an owner notice (cy360-exposure-mgmt
 #     saas_exposure/routes.py) — opened by the file's owner, who may have no
@@ -2149,6 +2155,26 @@ server {
     # oauth2-proxy. The single-use token in the path is the credential.
     # Exact pattern only; the rest of /api/dlp/ stays behind oauth2-proxy.
     location ~ ^/api/dlp/override/[0-9a-f-]+/[0-9a-f-]+/[A-Za-z0-9_-]+$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # Approval requests (blueprints/approvals/routes.py): the requester
+    # gives a reason, their supervisor approves or declines — both from an
+    # emailed link, usually with no Cy360 session. The token in the path is
+    # the credential; the rest of /api/approvals stays behind oauth2-proxy.
+    location ~ ^/api/approvals/start/[A-Za-z0-9_.-]+$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    location ~ ^/api/approvals/(request|act)/[0-9a-f-]+/[0-9a-f-]+/[A-Za-z0-9_-]+$ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
