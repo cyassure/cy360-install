@@ -22,8 +22,9 @@
     "v0.94.1",
     "v0.94.0"
   ],
-  "updated_at": "2026-11-21T18:39:41Z",
+  "updated_at": "2026-11-21T20:05:54Z",
   "dev_versions": [
+    "v0.107.1-dev.29.g3c444b3",
     "v0.107.1-dev.26.g39bb3c9",
     "v0.107.1-dev.18.g41b5a75",
     "v0.107.1-dev.12.g88dfd6a",
@@ -32,9 +33,8 @@
     "v0.106.1-dev.99.g0b6283e",
     "v0.106.1-dev.90.g0cb3b33",
     "v0.106.1-dev.88.g04dc830",
-    "v0.106.1-dev.80.g14dddd9",
-    "v0.106.1-dev.75.geb333ff"
+    "v0.106.1-dev.80.g14dddd9"
   ],
-  "dev": "v0.107.1-dev.26.g39bb3c9",
-  "dev_commit": "39bb3c9c687e5553d529d6c2f51ae643df0a4f58"
+  "dev": "v0.107.1-dev.29.g3c444b3",
+  "dev_commit": "3c444b3667028fa6756f860d72bdc35e5c834adb"
 }
