@@ -1,4 +1,4 @@
-# CyAssure 360 — deployment bundle (v0.107.1-dev.30.g39b1bc0)
+# CyAssure 360 — deployment bundle (v0.107.1-dev.109.gcd38eaa)
 # You need only this file + .env. There is no source code, Dockerfile, or
 # build context anywhere in this bundle.
 #
@@ -82,7 +82,7 @@ services:
 
   backend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     # Workers recycled every ~1,000 requests, except the scheduler's
     # (core/gunicorn_conf.py). Tune with BACKEND_GUNICORN_ARGS in .env.
     command: ["gunicorn", "-c", "python:core.gunicorn_conf", "--bind", "0.0.0.0:5252", "app:app"]
@@ -199,7 +199,7 @@ services:
   # back to backend if this service isn't running.
   agent-api:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     command: ["gunicorn", "--bind", "0.0.0.0:5252", "app:app"]
     restart: unless-stopped
     environment:
@@ -244,7 +244,7 @@ services:
 
   cysiemstack-engine:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     restart: unless-stopped
     environment:
       # cyassure_app, not corruser — see the backend service's identical
@@ -281,7 +281,7 @@ services:
   # keep grouping safe across processes. ENGINE_INGEST_WORKERS in .env, 0 = off.
   engine-ingest:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-engine:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     command: ["python", "-m", "engine_ingest"]
     restart: unless-stopped
     deploy:
@@ -312,7 +312,7 @@ services:
 
   frontend:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-frontend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     restart: unless-stopped
     ports:
       # SECURITY (VAPT H-1): cyassure-setup.sh writes APP_BIND_ADDR=127.0.0.1
@@ -413,7 +413,7 @@ services:
   # the normal import system regardless of the exact site-packages path.
   ingest-worker:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     command: ["python", "-m", "cysiemstack.ingest_worker"]
     restart: unless-stopped
     environment:
@@ -445,7 +445,7 @@ services:
   # if you don't use the gateway. Missing from this bundle until 2026-11-13.
   gateway-mitm-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_mitm_relay"]
     restart: unless-stopped
@@ -469,7 +469,7 @@ services:
 
   gateway-sni-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     profiles: ["aigateway"]
     command: ["python", "-m", "cy_gateway_proxy.run_sni_relay"]
     restart: unless-stopped
@@ -501,7 +501,7 @@ services:
   # "maildlp" to COMPOSE_PROFILES. Missing from this bundle until 2026-11-13.
   mail-dlp-relay:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-backend:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     profiles: ["maildlp"]
     command: ["python", "-m", "dlp_mail.run_relay"]
     restart: unless-stopped
@@ -540,7 +540,7 @@ services:
   # UI screens generate as a fallback either way.
   updater:
     logging: *default-logging
-    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.107.1-dev.30.g39b1bc0}
+    image: ${CYASSURE_IMAGE_REGISTRY:-registry.cyassure.eu}/cyassure/cy360-updater:${CYASSURE_VERSION:-0.107.1-dev.109.gcd38eaa}
     profiles: ["selfupdate"]
     restart: unless-stopped
     privileged: true
