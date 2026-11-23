@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.107.0 -- 2026-11-20 21:52 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.108.0 -- 2026-11-23 21:26 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -55,6 +55,8 @@
 # prompt — this is what the portal's Setup Wizard generates for you):
 #   CYASSURE_SETUP_DOMAIN=company.com    pre-seeds the base-domain prompt
 #   CYASSURE_SETUP_ENV=prod|staging      pre-seeds the certbot environment prompt
+#   CYASSURE_SETUP_NTP=os|india|<hosts>  pre-seeds the time-source prompt (--ntp);
+#                                        india = NIC + NPL servers (CERT-In)
 #
 # CyDataLake (Kafka+ClickHouse, or the Docker-native redpanda+clickhouse
 # equivalent when installed via the app bring-up step) is part of the
@@ -182,6 +184,9 @@ APP_VERSION=""
 # right before the HOST VHOST + TLS step runs, as a safety net for
 # --update/--infra runs where the interactive block above is skipped entirely.
 TLS_MODE="${CYASSURE_SETUP_TLS_MODE:-}"
+# Host time source (--ntp / CYASSURE_SETUP_NTP): os (leave as is) | india
+# (NIC + NPL, CERT-In Direction (i)) | comma-separated NTP servers.
+NTP_CHOICE="${CYASSURE_SETUP_NTP:-}"
 _args=("$@")
 for ((_i=0; _i<${#_args[@]}; _i++)); do
     arg="${_args[$_i]}"
@@ -200,6 +205,8 @@ for ((_i=0; _i<${#_args[@]}; _i++)); do
         --registration-id=*) REGISTRATION_ID="${arg#*=}" ;;
         --registry-token)   REGISTRY_TOKEN="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --registry-token=*) REGISTRY_TOKEN="${arg#*=}" ;;
+        --ntp)              NTP_CHOICE="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
+        --ntp=*)            NTP_CHOICE="${arg#*=}" ;;
         --tls-mode)         TLS_MODE="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
         --tls-mode=*)       TLS_MODE="${arg#*=}" ;;
         --cert-path)        CYASSURE_SETUP_CERT_PATH="${_args[$((_i+1))]}"; _i=$((_i+1)) ;;
@@ -365,7 +372,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.107.0"
+_SCRIPT_VERSION="v0.108.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -574,9 +581,27 @@ if [[ -z "${_CYASSURE_PROMPTS_DONE:-}" ]]; then
     # "yes" — installing it would have stood up a second, redundant,
     # non-functional Kafka/ClickHouse stack alongside the Docker-native one.
 
+    # Host time source (CERT-In Direction (i): sync to NIC / NPL or NTP
+    # traceable to them). Fresh installs only; --ntp / CYASSURE_SETUP_NTP
+    # pre-seed it and work on any run.
+    if [[ "$_FRESH_INSTALL" == "true" && -z "$NTP_CHOICE" && -t 0 ]]; then
+        step_header "TIME SOURCE (NTP)"
+        echo -e "  ${WHITE}Which time servers should this server use?${NC}"
+        echo -e "    ${DIM}1)${NC} Keep the operating system's default"
+        echo -e "    ${DIM}2)${NC} India — NIC + NPL servers (CERT-In Directions 2022)"
+        echo -e "    ${DIM}3)${NC} My own NTP servers"
+        ask _ntp_pick "Choice" "1"
+        case "$_ntp_pick" in
+            2) NTP_CHOICE="india" ;;
+            3) ask NTP_CHOICE "NTP servers (comma-separated)" "" ;;
+            *) NTP_CHOICE="os" ;;
+        esac
+    fi
+
     # Export every collected decision (plus the guard itself) so they survive
     # the self-update re-exec further down.
     export BASE_DOMAIN CERTBOT_ENV
+    export CYASSURE_SETUP_NTP="${NTP_CHOICE:-}"
     # TLS answers must survive the re-exec too — TLS_MODE is re-initialised
     # from CYASSURE_SETUP_TLS_MODE at the top of the script, so an interactive
     # dns01/byo/selfsigned/none pick was otherwise lost and silently became
@@ -704,6 +729,8 @@ if [[ "$MODE" == "full" ]]; then
             || { error "No deploy bundle found for ${_APP_TAG} at ${_APP_MIRROR}/bundles/${_APP_TAG}/ — check the version exists in ${_APP_MIRROR}/manifest.json."; exit 1; }
         curl -fsSL "${_APP_MIRROR}/bundles/${_APP_TAG}/.env.example" -o "${APP_DIR}/.env.example"
         curl -fsSL "${_APP_MIRROR}/bundles/${_APP_TAG}/docker-compose.gvm.yml" -o "${APP_DIR}/docker-compose.gvm.yml" 2>/dev/null || true
+        curl -fsSL "${_APP_MIRROR}/bundles/${_APP_TAG}/cy360-restore.sh" -o "${APP_DIR}/cy360-restore.sh" 2>/dev/null \
+            && chmod 700 "${APP_DIR}/cy360-restore.sh" || true
         success "Bundle downloaded to ${APP_DIR}/"
 
         cd "$APP_DIR"
@@ -1772,7 +1799,12 @@ else
     # ── Pull and start oauth2-proxy container ───────────────────────────────────
     # Runs on 127.0.0.1:4180. nginx uses it as an internal auth_request backend.
     # Cookie domain .BASE_DOMAIN means ONE login covers all subdomains.
-    _OAUTH2_PROXY_IMAGE="quay.io/oauth2-proxy/oauth2-proxy:latest"
+    # Pinned by tag AND digest (was :latest, so a fresh install got whatever
+    # was newest that day; security test round 2026-11-22). v7.15.6: fixes
+    # the 2026 auth-bypass advisories (GHSA-63jm-59jj-478j, GHSA-wr5q-7wxw-x568,
+    # fixed in >7.15.4) plus 18 dependency CVEs. Raise deliberately: check the
+    # release notes, update tag + digest together.
+    _OAUTH2_PROXY_IMAGE="quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048"
 
     if docker ps -q --filter "name=cy-proxy" 2>/dev/null | grep -q .; then
         info "cy-proxy container already running — checking config..."
@@ -1788,8 +1820,12 @@ else
             | python3 -c "import sys,json,hashlib; e=dict(x.split('=',1) for x in json.load(sys.stdin)[0]['Config']['Env'] if '=' in x); \
               print(hashlib.sha256((e.get('OAUTH2_PROXY_CLIENT_SECRET','')+'|'+e.get('OAUTH2_PROXY_COOKIE_SECRET','')).encode()).hexdigest())" 2>/dev/null || true)
         _wanted_secrets=$(printf '%s|%s' "$OAUTH2PROXY_SECRET" "$OAUTH2PROXY_COOKIE_SECRET" | sha256sum | cut -d' ' -f1)
+        _running_image=$(docker inspect cy-proxy --format '{{.Config.Image}}' 2>/dev/null || true)
         if [[ "$_running_domain" != ".${BASE_DOMAIN}" ]]; then
             info "cy-proxy domain changed — recreating container"
+            docker rm -f cy-proxy 2>/dev/null || true
+        elif [[ "$_running_image" != "$_OAUTH2_PROXY_IMAGE" ]]; then
+            info "cy-proxy runs ${_running_image:-an unknown image}, pinned is ${_OAUTH2_PROXY_IMAGE%%@*} — recreating container"
             docker rm -f cy-proxy 2>/dev/null || true
         elif [[ "$_running_secrets" != "$_wanted_secrets" ]]; then
             info "cy-proxy secrets differ from .env — recreating container"
@@ -1828,7 +1864,6 @@ else
             -e OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=false \
             -e OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true \
             -e OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS=false \
-            -e OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true \
             -e OAUTH2_PROXY_COOKIE_SECURE=true \
             -e OAUTH2_PROXY_COOKIE_SAMESITE=lax \
             -e OAUTH2_PROXY_SESSION_STORE_TYPE=cookie \
@@ -2221,10 +2256,26 @@ server {
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
     }
+    # INTEGRATIONS-API-BYPASS (2026-11-21) — the integration REST API
+    # (blueprints/data_api): other systems call it with an integration key
+    # (Authorization: Bearer cyik_…), checked app-side on every request —
+    # never a browser session. Only /api/integrations/v1/ is exempt.
+    location ^~ /api/integrations/v1/ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   Authorization     \$http_authorization;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
     location /mcp/ {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
+        # CY360-MCP-CLIENT-IP — the client address, for MCP keys' IP allowlists.
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header   Authorization     \$http_authorization;
         proxy_set_header   Connection        "";
         proxy_buffering    off;
@@ -2427,6 +2478,63 @@ STUBEOF
         fi
     fi
 fi
+
+# ── Step 4.3c-hardening: host nginx — real client address + TLS 1.2 suites ────
+# Every mode; the updater runs the same block on every Update/Upgrade so
+# installs that never re-run this script get it too.
+# >>> cyassure-nginx-hardening — identical in cyassure-setup.sh and updater/server.py
+# (tests/unit/test_host_nginx_hardening.py). Security test round 2026-11-22:
+#   F5  real client address behind Cloudflare: nginx takes CF-Connecting-IP,
+#       but ONLY from Cloudflare's published ranges, so a server not behind
+#       Cloudflare is unaffected and nobody can set the header themselves.
+#   F13 TLS 1.2 suites: ECDHE with AES-GCM / ChaCha20 only (the vhost sets
+#       no ssl_ciphers, so nginx's default list offered CBC suites).
+# Both at http level (conf.d), so every server block picks them up. A failed
+# nginx -t puts the previous files back and reloads nothing.
+if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx/conf.d ]; then
+    _cy_cf4=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v4 2>/dev/null | grep -E '^[0-9.]+/[0-9]+$' || true)
+    _cy_cf6=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v6 2>/dev/null | grep -E '^[0-9a-fA-F:]+/[0-9]+$' || true)
+    if [ -z "$_cy_cf4" ] || [ -z "$_cy_cf6" ]; then
+        echo "[NGINX] Cloudflare ranges not reachable — using the built-in list (2026-11-23)"
+        _cy_cf4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+        _cy_cf6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
+    fi
+    _cy_dir=$(mktemp -d)
+    {
+        echo "# Managed by CyAssure 360 (cyassure-setup.sh / updater) — rewritten on every update."
+        echo "# Real client address for requests that arrive through Cloudflare."
+        for _cy_r in $_cy_cf4 $_cy_cf6; do echo "set_real_ip_from $_cy_r;"; done
+        echo "real_ip_header CF-Connecting-IP;"
+    } > "$_cy_dir/cyassure-realip.conf"
+    {
+        echo "# Managed by CyAssure 360 (cyassure-setup.sh / updater) — rewritten on every update."
+        echo "# TLS 1.2 suites: forward secrecy + AEAD only (TLS 1.3 suites are not affected)."
+        echo "ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;"
+    } > "$_cy_dir/cyassure-tls.conf"
+    _cy_changed=""
+    for _cy_f in cyassure-realip.conf cyassure-tls.conf; do
+        if ! cmp -s "$_cy_dir/$_cy_f" "/etc/nginx/conf.d/$_cy_f"; then
+            [ -f "/etc/nginx/conf.d/$_cy_f" ] && cp -p "/etc/nginx/conf.d/$_cy_f" "$_cy_dir/$_cy_f.prev"
+            install -m 0644 "$_cy_dir/$_cy_f" "/etc/nginx/conf.d/$_cy_f"
+            _cy_changed="$_cy_changed $_cy_f"
+        fi
+    done
+    if [ -n "$_cy_changed" ]; then
+        if nginx -t 2>/dev/null; then
+            systemctl reload nginx 2>/dev/null && echo "[NGINX] real client address (Cloudflare) and TLS 1.2 suites applied" \
+                || echo "[NGINX] config valid but reload failed — check: systemctl status nginx"
+        else
+            echo "[NGINX] nginx -t failed with the new files — putting the previous ones back:"
+            nginx -t 2>&1 | tail -3
+            for _cy_f in $_cy_changed; do
+                if [ -f "$_cy_dir/$_cy_f.prev" ]; then cp -p "$_cy_dir/$_cy_f.prev" "/etc/nginx/conf.d/$_cy_f"
+                else rm -f "/etc/nginx/conf.d/$_cy_f"; fi
+            done
+        fi
+    fi
+    rm -rf "$_cy_dir"
+fi
+# <<< cyassure-nginx-hardening
 
 # ── Step 4.3c: Wire oauth2-proxy into the host vhost (whole-app gate) ────────
 # The oauth2-proxy container above has always started (best-effort) whenever
@@ -2652,6 +2760,65 @@ DSPM_BYPASS_NGINX_PY
                 warn "nginx reload failed after DSPM scanner bypass injection — check: nginx -t"
         else
             success "nginx: DSPM scanner bypass already configured"
+        fi
+        # Integration REST API + MCP client address (2026-11-21). Same marker
+        # + anchor pattern, mirrored in updater/server.py's
+        # _wire_iap_gateway_vhost().
+        if ! grep -q "INTEGRATIONS-API-BYPASS" "$_iap_vhost_real" 2>/dev/null || \
+           ! grep -q "CY360-MCP-CLIENT-IP" "$_iap_vhost_real" 2>/dev/null; then
+            python3 - "$_iap_vhost_real" << INTEGRATIONS_BYPASS_NGINX_PY
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+block = (
+    "    # INTEGRATIONS-API-BYPASS — the integration REST API (integration key\n"
+    "    # checked app-side on every request, never a browser session).\n"
+    "    location ^~ /api/integrations/v1/ {\n"
+    "        proxy_pass         http://127.0.0.1:${APP_PORT};\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header   Host              \$host;\n"
+    "        proxy_set_header   Authorization     \$http_authorization;\n"
+    "        proxy_set_header   X-Real-IP         \$remote_addr;\n"
+    "        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;\n"
+    "        proxy_set_header   X-Forwarded-Proto https;\n"
+    "    }\n"
+)
+mcp_ip = (
+    "        # CY360-MCP-CLIENT-IP — the client address, for MCP keys' IP allowlists.\n"
+    "        proxy_set_header   X-Real-IP         \$remote_addr;\n"
+    "        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;\n"
+)
+
+changed = False
+anchor = "    location /api/ {"
+if "INTEGRATIONS-API-BYPASS" not in text:
+    if anchor in text:
+        idx = text.find(anchor)
+        text = text[:idx] + block + text[idx:]
+        changed = True
+        print("nginx: INTEGRATIONS-API-BYPASS location block injected")
+    else:
+        print("nginx: 'location /api/ {' anchor not found — INTEGRATIONS-API-BYPASS block NOT injected, check this vhost manually")
+mcp_anchor = "    location /mcp/ {\n"
+if "CY360-MCP-CLIENT-IP" not in text:
+    if mcp_anchor in text:
+        idx = text.find(mcp_anchor) + len(mcp_anchor)
+        text = text[:idx] + mcp_ip + text[idx:]
+        changed = True
+        print("nginx: MCP client address headers injected")
+    else:
+        print("nginx: 'location /mcp/ {' not found — MCP client address headers NOT added")
+if changed:
+    with open(path, "w") as f:
+        f.write(text)
+INTEGRATIONS_BYPASS_NGINX_PY
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && \
+                success "nginx: integration API bypass + MCP client address added and reloaded" || \
+                warn "nginx reload failed after integration API injection — check: nginx -t"
+        else
+            success "nginx: integration API bypass already configured"
         fi
     fi
 fi
@@ -3010,6 +3177,68 @@ step_header "CRON JOBS"
 # The portal's /api/system/schedules endpoint writes cron entries directly.
 # No cron jobs are auto-provisioned during setup any longer.
 info "Cron schedule management delegated to System Settings → Scheduler tab"
+
+# ── Step 23a: Host time source (NTP) ──────────────────────────────────────────
+# --ntp=india points chrony (or systemd-timesyncd) at NIC + NPL, as CERT-In
+# Directions 2022 Direction (i) asks of Indian deployments; --ntp=a,b,c at
+# your own servers; --ntp=os puts the operating system's sources back.
+# Without --ntp (and no answer to the prompt) nothing is changed. Ubuntu's
+# own pools / NTS servers are set aside (renamed *.cyassure-disabled), not
+# deleted: they are marked "prefer" and would otherwise keep winning.
+_CY_NTP_INDIA="samay1.nic.in samay2.nic.in time.nplindia.org time.nplindia.in"
+_cy_apply_ntp() {
+    local choice="$1" servers="" h
+    case "$choice" in
+        ""|os) servers="" ;;
+        india) servers="$_CY_NTP_INDIA" ;;
+        *) servers="${choice//,/ }" ;;
+    esac
+    for h in $servers; do
+        [[ "$h" =~ ^[A-Za-z0-9.:-]+$ ]] || { warn "NTP: ignoring invalid server name '$h'"; return 1; }
+    done
+    if command -v chronyd >/dev/null 2>&1 && [[ -d /etc/chrony ]]; then
+        local srcd=/etc/chrony/sources.d confd=/etc/chrony/conf.d f
+        mkdir -p "$srcd"
+        grep -q "^sourcedir $srcd" /etc/chrony/chrony.conf 2>/dev/null || echo "sourcedir $srcd" >> /etc/chrony/chrony.conf
+        if [[ -z "$servers" ]]; then
+            [[ -f "$srcd/cyassure.sources" || -n "$(ls "$srcd"/*.cyassure-disabled "$confd"/*.cyassure-disabled 2>/dev/null)" ]] || return 0
+            rm -f "$srcd/cyassure.sources"
+            for f in "$srcd"/*.cyassure-disabled "$confd"/*.cyassure-disabled; do
+                [[ -e "$f" ]] && mv "$f" "${f%.cyassure-disabled}"
+            done
+            sed -i 's/^# cyassure-ntp: //' /etc/chrony/chrony.conf
+            info "NTP: operating system time sources restored"
+        else
+            { echo "# Managed by cyassure-setup.sh (--ntp=$choice)"
+              for h in $servers; do echo "server $h iburst"; done; } > "$srcd/cyassure.sources"
+            for f in "$srcd"/*.sources "$confd"/*.conf; do
+                [[ -e "$f" && "$(basename "$f")" != "cyassure.sources" ]] || continue
+                grep -qE '^\s*(pool|server|peer)\s' "$f" && mv "$f" "$f.cyassure-disabled"
+            done
+            sed -i -E 's/^(pool|server|peer)\s/# cyassure-ntp: &/' /etc/chrony/chrony.conf
+            info "NTP: chrony now uses ${servers}"
+        fi
+        systemctl restart chrony 2>/dev/null || systemctl restart chronyd 2>/dev/null || warn "NTP: could not restart chrony"
+        sleep 5
+        chronyc -n sources 2>/dev/null | sed -n '1,8p' || true
+    elif systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
+        mkdir -p /etc/systemd/timesyncd.conf.d
+        if [[ -z "$servers" ]]; then
+            rm -f /etc/systemd/timesyncd.conf.d/cyassure.conf
+        else
+            printf '# Managed by cyassure-setup.sh (--ntp=%s)\n[Time]\nNTP=%s\nFallbackNTP=\n' "$choice" "$servers" \
+                > /etc/systemd/timesyncd.conf.d/cyassure.conf
+        fi
+        systemctl restart systemd-timesyncd 2>/dev/null || warn "NTP: could not restart systemd-timesyncd"
+        info "NTP: systemd-timesyncd uses ${servers:-the operating system default}"
+    else
+        warn "NTP: neither chrony nor systemd-timesyncd found — set the time source by hand"
+    fi
+}
+if [[ -n "$NTP_CHOICE" ]]; then
+    step_header "TIME SOURCE (NTP)"
+    _cy_apply_ntp "$NTP_CHOICE" || ERRORS+=("NTP time source not applied (--ntp=$NTP_CHOICE)")
+fi
 
 # ── Step 23b: Firewall (UFW) ──────────────────────────────────────────────────
 # Strategy: all public traffic flows through nginx (80/443).  Internal services
