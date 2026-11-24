@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# CyAssure 360 -- Setup & Update Wizard v0.108.0 -- 2026-11-23 21:26 UTC
+# CyAssure 360 -- Setup & Update Wizard v0.109.0 -- 2026-11-24 18:39 UTC
 #
 # ONE script now does the whole job — this used to be a two-script install
 # (scripts/install.sh for the Docker app bring-up, this file for everything
@@ -372,7 +372,7 @@ ask_yn() {
 
 # Published version of this script — updated automatically by git-push.sh on each release.
 # Used by --update mode to skip re-installation when the server is already on the latest version.
-_SCRIPT_VERSION="v0.108.0"
+_SCRIPT_VERSION="v0.109.0"
 
 # Mask GIT auth tokens in URLs before printing to output
 _mask_url() { echo "$1" | sed 's|pkg\.github\.com/.*/|pkg.github.com/[TOKEN]/|g'; }
@@ -2014,6 +2014,10 @@ else
 #     customer's own website/app (consent, notices) and its users (rights
 #     requests, grievances) call it with no Cy360 session; the per-tenant
 #     X-Cy360-Privacy-Key header is the credential.
+#   - /api/comp/public/policy-ack/<token>: the policy acknowledgement page
+#     (cy360-grc comp/policy_routes.py) — staff open it from an emailed
+#     link, usually with no Cy360 account; the one-time token is the
+#     credential. Exact pattern only; the rest of /api/comp/ stays behind.
 #   - /api/dspm/scanner/*: the Data Security in-environment scanner, a
 #     container in the customer's network calling home with its
 #     X-Cy360-Scanner-Token (claim scan jobs and database lookups, post
@@ -2236,6 +2240,20 @@ server {
     # only /api/privacy/public/ is exempt, the rest stays behind oauth2-proxy.
     location ^~ /api/privacy/public/ {
         client_max_body_size 64k;
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+    }
+    # POLICY-ACK-BYPASS — policy acknowledgement page (cy360-grc
+    # comp/policy_routes.py, 2026-11-24): staff open it from an emailed link
+    # with no Cy360 session; the one-time token in the path is the
+    # credential. Exact pattern only; the rest of /api/comp/ stays behind
+    # oauth2-proxy.
+    location ~ ^/api/comp/public/policy-ack/cy360pa_[0-9a-f-]+_[A-Za-z0-9_-]+$ {
+        client_max_body_size 16k;
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Host              \$host;
@@ -2760,6 +2778,46 @@ DSPM_BYPASS_NGINX_PY
                 warn "nginx reload failed after DSPM scanner bypass injection — check: nginx -t"
         else
             success "nginx: DSPM scanner bypass already configured"
+        fi
+        # ── Inject the policy acknowledgement bypass if missing (2026-11-24) ──
+        # Same marker + anchor pattern, mirrored in updater/server.py's
+        # _wire_iap_gateway_vhost().
+        if ! grep -q "POLICY-ACK-BYPASS" "$_iap_vhost_real" 2>/dev/null; then
+            python3 - "$_iap_vhost_real" << POLICY_ACK_BYPASS_NGINX_PY
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+block = (
+    "    # POLICY-ACK-BYPASS — policy acknowledgement page (emailed one-time\n"
+    "    # link, no Cy360 session; the token in the path is the credential).\n"
+    "    location ~ ^/api/comp/public/policy-ack/cy360pa_[0-9a-f-]+_[A-Za-z0-9_-]+\$ {\n"
+    "        client_max_body_size 16k;\n"
+    "        proxy_pass         http://127.0.0.1:${APP_PORT};\n"
+    "        proxy_http_version 1.1;\n"
+    "        proxy_set_header   Host              \$host;\n"
+    "        proxy_set_header   X-Real-IP         \$remote_addr;\n"
+    "        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;\n"
+    "        proxy_set_header   X-Forwarded-Proto https;\n"
+    "    }\n"
+)
+
+anchor = "    location /api/ {"
+if anchor in text:
+    idx = text.find(anchor)
+    text = text[:idx] + block + text[idx:]
+    with open(path, "w") as f:
+        f.write(text)
+    print("nginx: POLICY-ACK-BYPASS location block injected")
+else:
+    print("nginx: 'location /api/ {' anchor not found — POLICY-ACK-BYPASS block NOT injected, check this vhost manually")
+POLICY_ACK_BYPASS_NGINX_PY
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && \
+                success "nginx: policy acknowledgement bypass added and reloaded" || \
+                warn "nginx reload failed after policy acknowledgement bypass injection — check: nginx -t"
+        else
+            success "nginx: policy acknowledgement bypass already configured"
         fi
         # Integration REST API + MCP client address (2026-11-21). Same marker
         # + anchor pattern, mirrored in updater/server.py's
